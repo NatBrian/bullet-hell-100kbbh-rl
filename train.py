@@ -34,7 +34,10 @@ def train(args):
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
         bullet_reward_coef=args.bullet_reward_coef,
         use_enemy_distance_reward=not args.no_enemy_distance_reward,
-        enemy_reward_coef=args.enemy_reward_coef
+        enemy_reward_coef=args.enemy_reward_coef,
+        alive_reward=args.alive_reward,
+        death_penalty=args.death_penalty,
+        risk_clip=args.risk_clip
     )
 
     # Agent
@@ -144,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--stack_size", type=int, default=4)
     parser.add_argument("--alive_thresh", type=float, default=150.0)
     parser.add_argument("--dead_thresh", type=float, default=130.0)
-    parser.add_argument("--dead_streak", type=int, default=5)
+    parser.add_argument("--dead_streak", type=int, default=3)
     
     # Agent params
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -166,14 +169,17 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
     parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
+    parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
+    parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
+    parser.add_argument("--risk-clip", type=float, default=3.0, help="Clip value for distance-based risk")
     
     # Bullet distance reward params (enabled by default)
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
-    parser.add_argument("--bullet-reward-coef", type=float, default=0.1, help="Coefficient for bullet distance reward (increased from 0.01)")
+    parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
     
     # Enemy distance reward params (enabled by default)
     parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")
-    parser.add_argument("--enemy-reward-coef", type=float, default=0.05, help="Coefficient for enemy distance reward (increased from 0.01)")
+    parser.add_argument("--enemy-reward-coef", type=float, default=0.01, help="Coefficient for enemy distance reward")
     
     args = parser.parse_args()
     train(args)

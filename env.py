@@ -32,13 +32,16 @@ class BulletHellEnv(gym.Env):
         stack_size=4,
         alive_thresh=150.0, # LUMINANCE THRESHOLD FOR ALIVE
         dead_thresh=130.0, # LUMINANCE THRESHOLD FOR DEAD
-        dead_streak=5,
+        dead_streak=3,
         action_duration=0.016, # REACTION TIME AI PRESS KEY IN SECONDS (1 frame at 60 FPS)
         save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
         use_enemy_distance_reward=False, # Enable enemy distance reward shaping
         enemy_reward_coef=0.01, # Coefficient for enemy distance reward
+        alive_reward=4.0,  # Reward per frame survived (when bright)
+        death_penalty=-20.0,  # Penalty on death
+        risk_clip=3.0,  # Clip for distance-based risk
     ):
         super().__init__()
         self.window_title = window_title
@@ -56,6 +59,11 @@ class BulletHellEnv(gym.Env):
         self.bullet_reward_coef = bullet_reward_coef
         self.use_enemy_distance_reward = use_enemy_distance_reward
         self.enemy_reward_coef = enemy_reward_coef
+        self.alive_reward = alive_reward
+        self.death_penalty = death_penalty
+        self.risk_clip = risk_clip
+        self.last_bullet_dist = None
+        self.last_enemy_dist = None
         
         # Initialize bullet mask generator if needed
         if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
@@ -266,6 +274,8 @@ class BulletHellEnv(gym.Env):
         self.steps = 0
         self.episode_reward = 0.0
         self.luminance_history.clear()
+        self.last_bullet_dist = None
+        self.last_enemy_dist = None
         
         # 1. Focus window
         try:
@@ -366,10 +376,10 @@ class BulletHellEnv(gym.Env):
             
             # 4. Compute Reward for this frame
             if terminated:
-                frame_reward = -100.0
+                frame_reward = self.death_penalty
             else:
                 # Avoid granting survival reward on dark frames that precede death detection
-                frame_reward = 0.0 if lum < self.dead_thresh else 1.0
+                frame_reward = 0.0 if lum < self.dead_thresh else self.alive_reward
                 
                 # Add distance shaping if enabled
                 if use_mask and mask is not None:
@@ -435,25 +445,49 @@ class BulletHellEnv(gym.Env):
             total_reward = 0.0
             frame_diagonal = np.sqrt(84**2 + 84**2)
 
-            # Bullet Reward
+            # Bullet Reward (nearest-distance potential + closing/escaping speed)
             if self.use_bullet_distance_reward:
-                if len(bullet_positions) > 0:
-                    # Use Cumulative Risk (Potential Field) with clamping
-                    risk = self.mask_generator.compute_cumulative_risk(
-                        ship_pos, bullet_positions, normalize_by=frame_diagonal
-                    )
-                    # Clamp risk to prevent overwhelming penalties in dense patterns
-                    risk = min(risk, 50.0)
-                    total_reward -= self.bullet_reward_coef * risk
+                dist = self.mask_generator.compute_nearest_bullet_distance(
+                    ship_pos, bullet_positions, normalize_by=frame_diagonal
+                )
+                if dist is not None:
+                    risk = 1.0 / (dist + 1e-6)
+                    risk = min(risk, self.risk_clip)
+                    closing_pen = 0.0
+                    escape_bonus = 0.0
+                    if self.last_bullet_dist is not None:
+                        delta = self.last_bullet_dist - dist  # positive if getting closer
+                        if delta > 0:
+                            closing_pen = min(delta * self.risk_clip, self.risk_clip)
+                        elif delta < 0:
+                            escape_bonus = min(-delta * self.risk_clip, self.risk_clip)
+                    total_reward -= self.bullet_reward_coef * (risk + closing_pen)
+                    total_reward += self.bullet_reward_coef * escape_bonus
+                    self.last_bullet_dist = dist
+                else:
+                    self.last_bullet_dist = None
 
-            # Enemy Reward
+            # Enemy Reward (nearest-distance potential + closing/escaping speed)
             if self.use_enemy_distance_reward:
-                if len(enemy_positions) > 0:
-                    risk = self.mask_generator.compute_cumulative_risk(
-                        ship_pos, enemy_positions, normalize_by=frame_diagonal
-                    )
-                    risk = min(risk, 50.0)
-                    total_reward -= self.enemy_reward_coef * risk
+                dist = self.mask_generator.compute_nearest_enemy_distance(
+                    ship_pos, enemy_positions, normalize_by=frame_diagonal
+                )
+                if dist is not None:
+                    risk = 1.0 / (dist + 1e-6)
+                    risk = min(risk, self.risk_clip)
+                    closing_pen = 0.0
+                    escape_bonus = 0.0
+                    if self.last_enemy_dist is not None:
+                        delta = self.last_enemy_dist - dist
+                        if delta > 0:
+                            closing_pen = min(delta * self.risk_clip, self.risk_clip)
+                        elif delta < 0:
+                            escape_bonus = min(-delta * self.risk_clip, self.risk_clip)
+                    total_reward -= self.enemy_reward_coef * (risk + closing_pen)
+                    total_reward += self.enemy_reward_coef * escape_bonus
+                    self.last_enemy_dist = dist
+                else:
+                    self.last_enemy_dist = None
 
             return total_reward
         
