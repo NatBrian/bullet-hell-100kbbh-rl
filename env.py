@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import os
 import cv2
 import time
 import win32gui
@@ -33,6 +34,7 @@ class BulletHellEnv(gym.Env):
         dead_thresh=130.0, # LUMINANCE THRESHOLD FOR DEAD
         dead_streak=5,
         action_duration=0.01, # REACTION TIME AI PRESS KEY IN SECONDS
+        save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
     ):
         super().__init__()
         self.window_title = window_title
@@ -44,6 +46,11 @@ class BulletHellEnv(gym.Env):
         self.dead_thresh = dead_thresh
         self.dead_streak = dead_streak
         self.action_duration = action_duration
+        self.save_screenshots = save_screenshots
+        self.last_screenshot_time = 0
+        
+        if self.save_screenshots > 0:
+            os.makedirs("game_screenshots", exist_ok=True)
 
         # Action Space: 9 discrete actions
         # 0: Idle, 1: W, 2: S, 3: A, 4: D, 5: WA, 6: WD, 7: SA, 8: SD
@@ -193,6 +200,16 @@ class BulletHellEnv(gym.Env):
                         img = sct.grab(monitor)
                         frame = np.array(img)
                         frame = frame[:, :, :3] # BGRA -> BGR
+                
+                # Save screenshot if enabled and interval passed
+                if self.save_screenshots > 0:
+                    current_time = time.time() * 1000 # Convert to ms
+                    if current_time - self.last_screenshot_time >= self.save_screenshots:
+                        filename = f"game_screenshots/{int(current_time)}.png"
+                        # frame is currently BGR (from dxcam or mss converted)
+                        # cv2.imwrite expects BGR
+                        cv2.imwrite(filename, frame)
+                        self.last_screenshot_time = current_time
 
                 # Resize and Grayscale
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY) if frame.shape[2] == 4 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

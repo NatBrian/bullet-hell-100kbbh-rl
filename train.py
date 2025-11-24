@@ -29,7 +29,8 @@ def train(args):
         stack_size=args.stack_size,
         alive_thresh=args.alive_thresh,
         dead_thresh=args.dead_thresh,
-        dead_streak=args.dead_streak
+        dead_streak=args.dead_streak,
+        save_screenshots=args.save_screenshots
     )
 
     # Agent
@@ -160,6 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
+    parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
     
     args = parser.parse_args()
     train(args)
