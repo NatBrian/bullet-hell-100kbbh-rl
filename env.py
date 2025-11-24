@@ -29,12 +29,12 @@ class BulletHellEnv(gym.Env):
         window_title="100KBBH",
         game_path=None,
         render_mode=None,
-        frame_skip=4,
+        frame_skip=1,  # Changed from 4 to 1 for faster iteration
         stack_size=4,
         alive_thresh=150.0, # LUMINANCE THRESHOLD FOR ALIVE
         dead_thresh=130.0, # LUMINANCE THRESHOLD FOR DEAD
         dead_streak=5,
-        action_duration=0.01, # REACTION TIME AI PRESS KEY IN SECONDS
+        action_duration=0.016, # REACTION TIME AI PRESS KEY IN SECONDS (1 frame at 60 FPS)
         save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
@@ -61,6 +61,14 @@ class BulletHellEnv(gym.Env):
         # Initialize bullet mask generator if needed
         if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
             self.mask_generator = BulletMaskGenerator()
+            
+            # Parallel mask generation to avoid blocking step()
+            self.latest_color_frame = None
+            self.cached_mask = None
+            self.mask_lock = threading.Lock()
+            self.mask_worker_running = True
+            self.mask_thread = threading.Thread(target=self._mask_worker, daemon=True)
+            self.mask_thread.start()
         
         if self.save_screenshots > 0:
             os.makedirs("game_screenshots", exist_ok=True)
@@ -93,6 +101,8 @@ class BulletHellEnv(gym.Env):
         
         self.steps = 0
         self.episode_reward = 0.0
+        self.last_ship_pos = None  # Track last known ship position
+        self.last_action = None  # Track last action for reward shaping
         
         # Initialize capture method
         self._init_capture()
@@ -111,6 +121,21 @@ class BulletHellEnv(gym.Env):
         if not self.use_dxcam:
             self.mss_sct = mss.mss()
             print("Using mss for screen capture.")
+    
+    def _mask_worker(self):
+        """Background thread for parallel mask generation."""
+        while self.mask_worker_running:
+            with self.mask_lock:
+                if self.latest_color_frame is not None:
+                    try:
+                        # Downscale for performance
+                        small_frame = cv2.resize(self.latest_color_frame, (84, 84), interpolation=cv2.INTER_AREA)
+                        mask = self.mask_generator.generate_mask(small_frame)
+                        self.cached_mask = mask
+                    except Exception as e:
+                        print(f"Mask generation error in worker: {e}")
+                        self.cached_mask = None
+            time.sleep(0.001)  # Small sleep to prevent busy-waiting
 
     def _get_window_rect(self):
         """Finds the game window and returns its bounding box."""
@@ -298,70 +323,97 @@ class BulletHellEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
-        # 1. Perform Action
-        keys = self.key_map[action]
-        if keys:
-            for k in keys:
-                pydirectinput.keyDown(k)
-            time.sleep(self.action_duration)
-            for k in keys:
-                pydirectinput.keyUp(k)
-        else:
-            time.sleep(self.action_duration) # Idle
-
-        # 2. Capture & Process
-        # Capture color frame if using distance rewards
-        if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
-            frame, color_frame = self._capture_frame(return_color=True)
-        else:
-            frame = self._capture_frame()
-            color_frame = None
+        """Execute action with proper frame skipping.
         
-        self.frame_stack.append(frame)
-        
-        # 3. Check Death
-        lum = np.mean(frame)
-        self.luminance_history.append(lum)
-        
+        Frame skip means:
+        1. Execute the same action for N consecutive frames
+        2. Accumulate rewards over all N frames
+        3. Only add the LAST frame to the observation stack
+        4. Terminate as soon as death is detected
+        """
+        total_reward = 0.0
         terminated = False
-        # If all recent frames are dark, we are dead
-        if len(self.luminance_history) == self.dead_streak:
-            if all(l < self.dead_thresh for l in self.luminance_history):
-                terminated = True
+        last_frame = None
+        last_lum = 0.0
         
-        # 4. Reward
-        # Base reward: +1 for survival, -100 for death
-        base_reward = 1.0 if not terminated else -100.0
+        # Execute action for frame_skip frames
+        for frame_idx in range(self.frame_skip):
+            # 1. Perform Action
+            keys = self.key_map[action]
+            if keys:
+                for k in keys:
+                    pydirectinput.keyDown(k)
+                time.sleep(self.action_duration)
+                for k in keys:
+                    pydirectinput.keyUp(k)
+            else:
+                time.sleep(self.action_duration)  # Idle
+
+            # 2. Capture & Process
+            if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
+                frame, color_frame = self._capture_frame(return_color=True)
+            else:
+                frame = self._capture_frame()
+                color_frame = None
+            
+            last_frame = frame
+            
+            # 3. Check Death
+            lum = np.mean(frame)
+            last_lum = lum
+            self.luminance_history.append(lum)
+            
+            # If all recent frames are dark, we are dead
+            if len(self.luminance_history) == self.dead_streak:
+                if all(l < self.dead_thresh for l in self.luminance_history):
+                    terminated = True
+            
+            # 4. Compute Reward for this frame
+            if terminated:
+                frame_reward = -100.0
+            else:
+                frame_reward = 1.0
+                
+                # Add distance shaping if enabled
+                if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) and color_frame is not None:
+                    dist_reward = self._compute_distance_rewards(color_frame)
+                    frame_reward += dist_reward
+            
+            total_reward += frame_reward
+            
+            # Early termination on death
+            if terminated:
+                break
         
-        # Add distance shaping if enabled
-        if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) and not terminated and color_frame is not None:
-            dist_reward = self._compute_distance_rewards(color_frame)
-            reward = base_reward + dist_reward
-        else:
-            reward = base_reward
+        # Only add the LAST frame to the stack (standard DQN frame skip)
+        self.frame_stack.append(last_frame)
         
-        self.episode_reward += reward
+        self.episode_reward += total_reward
         self.steps += 1
+        
+        # Track last action for potential reward shaping
+        self.last_action = action
         
         # 5. Info
         info = {
-            "luminance": lum,
+            "luminance": last_lum,
             "episode_reward": self.episode_reward,
-            "step_reward": reward,
-            "step_reward": reward,
+            "step_reward": total_reward,
             "bullet_distance_enabled": self.use_bullet_distance_reward,
-            "enemy_distance_enabled": self.use_enemy_distance_reward
+            "enemy_distance_enabled": self.use_enemy_distance_reward,
+            "frames_executed": frame_idx + 1  # How many frames were actually executed
         }
         
         # 6. Render
         if self.render_mode == "human":
-            self._render_frame(frame, info)
+            self._render_frame(last_frame, info)
 
-        return self._get_obs(), reward, terminated, False, info
+        return self._get_obs(), total_reward, terminated, False, info
     
     def _compute_distance_rewards(self, color_frame):
         """
         Compute reward based on distance to nearest bullet and enemy.
+        Uses parallel mask generation to avoid blocking.
         
         Args:
             color_frame: Full-resolution BGR frame
@@ -370,49 +422,58 @@ class BulletHellEnv(gym.Env):
             Total distance reward (float)
         """
         try:
-            # Optimization: Downscale frame for faster mask generation
-            # User confirmed bullets are large enough to be visible at 84x84.
-            # Matching observation size (84x84) unifies the pipeline and maximizes speed.
-            reward_h, reward_w = 84, 84
-            small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_AREA)
+            # Update color frame for background worker
+            with self.mask_lock:
+                self.latest_color_frame = color_frame
+                mask = self.cached_mask  # Use previously computed mask (1 frame delay)
             
-            # Generate mask on downscaled frame
-            mask = self.mask_generator.generate_mask(small_frame)
+            # If no cached mask yet (first few frames), compute synchronously
+            if mask is None:
+                reward_h, reward_w = 84, 84
+                small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_AREA)
+                mask = self.mask_generator.generate_mask(small_frame)
             
             # Extract positions
             ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
             
+            # Track last known ship position for fallback
+            if ship_pos is not None:
+                self.last_ship_pos = ship_pos
+            elif self.last_ship_pos is not None:
+                # Ship detection failed, use last known position with penalty
+                ship_pos = self.last_ship_pos
+                return -0.5
+            else:
+                # Can't find ship at all - heavily penalize
+                return -1.0
+            
             total_reward = 0.0
-            frame_diagonal = np.sqrt(reward_h**2 + reward_w**2)
+            frame_diagonal = np.sqrt(84**2 + 84**2)
 
             # Bullet Reward
             if self.use_bullet_distance_reward:
-                if ship_pos is not None and len(bullet_positions) > 0:
-                    # Use Cumulative Risk (Potential Field)
-                    # Risk = Sum(1/dist)
-                    # We want to minimize risk, so reward is negative risk
+                if len(bullet_positions) > 0:
+                    # Use Cumulative Risk (Potential Field) with clamping
                     risk = self.mask_generator.compute_cumulative_risk(
                         ship_pos, bullet_positions, normalize_by=frame_diagonal
                     )
-                    # Scale factor: Risk can be high (e.g. 1/0.01 = 100).
-                    # We want the penalty to be meaningful but not overwhelm base reward.
-                    # Default coef 0.01 -> Risk 100 * 0.01 = -1.0 (Death equivalent per step? Too high)
-                    # Let's scale it down. If dist=0.1 (close), risk=10. 10*0.01 = 0.1. Reasonable.
+                    # Clamp risk to prevent overwhelming penalties in dense patterns
+                    risk = min(risk, 50.0)
                     total_reward -= self.bullet_reward_coef * risk
 
             # Enemy Reward
             if self.use_enemy_distance_reward:
-                if ship_pos is not None and len(enemy_positions) > 0:
+                if len(enemy_positions) > 0:
                     risk = self.mask_generator.compute_cumulative_risk(
                         ship_pos, enemy_positions, normalize_by=frame_diagonal
                     )
+                    risk = min(risk, 50.0)
                     total_reward -= self.enemy_reward_coef * risk
 
             return total_reward
         
         except Exception as e:
             # If mask generation fails, return neutral reward
-            # Don't crash the training
             print(f"Reward computation failed: {e}")
             return 0.0
 
@@ -426,7 +487,6 @@ class BulletHellEnv(gym.Env):
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         # Show bullet distance status
-        # Show distance status
         bd_status = "ON" if info['bullet_distance_enabled'] else "OFF"
         ed_status = "ON" if info['enemy_distance_enabled'] else "OFF"
         cv2.putText(display, f"BD: {bd_status} | ED: {ed_status}", (10, 150), 
@@ -443,5 +503,11 @@ class BulletHellEnv(gym.Env):
         cv2.waitKey(1)
 
     def close(self):
+        # Stop mask worker thread
+        if hasattr(self, 'mask_worker_running'):
+            self.mask_worker_running = False
+            if hasattr(self, 'mask_thread'):
+                self.mask_thread.join(timeout=1.0)
+        
         if self.render_mode == "human":
             cv2.destroyAllWindows()
