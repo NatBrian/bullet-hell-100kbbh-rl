@@ -47,27 +47,41 @@ class CNNQNetwork(nn.Module):
         return x
 
 class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
+    def __init__(self, capacity, input_shape=(4, 84, 84)):
+        self.capacity = capacity
+        self.ptr = 0
+        self.size = 0
+        
+        # Pre-allocate memory to avoid constant allocation/copying
+        self.states = np.zeros((capacity, *input_shape), dtype=np.uint8)
+        self.actions = np.zeros((capacity,), dtype=np.int64)
+        self.rewards = np.zeros((capacity,), dtype=np.float32)
+        self.next_states = np.zeros((capacity, *input_shape), dtype=np.uint8)
+        self.dones = np.zeros((capacity,), dtype=np.uint8)
 
     def push(self, state, action, reward, next_state, done):
-        # State is already np array, but we might want to compress it?
-        # For now, store as is.
-        self.buffer.append((state, action, reward, next_state, done))
+        self.states[self.ptr] = state
+        self.actions[self.ptr] = action
+        self.rewards[self.ptr] = reward
+        self.next_states[self.ptr] = next_state
+        self.dones[self.ptr] = int(done)
+        
+        self.ptr = (self.ptr + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = zip(*batch)
+        ind = np.random.randint(0, self.size, size=batch_size)
+        
         return (
-            np.array(state),
-            np.array(action),
-            np.array(reward, dtype=np.float32),
-            np.array(next_state),
-            np.array(done, dtype=np.uint8)
+            self.states[ind],
+            self.actions[ind],
+            self.rewards[ind],
+            self.next_states[ind],
+            self.dones[ind]
         )
 
     def __len__(self):
-        return len(self.buffer)
+        return self.size
 
 class DQNAgent:
     def __init__(
@@ -93,7 +107,7 @@ class DQNAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.memory = ReplayBuffer(buffer_size)
+        self.memory = ReplayBuffer(buffer_size, input_shape=input_shape)
 
     def act(self, state, epsilon=0.0):
         if random.random() < epsilon:

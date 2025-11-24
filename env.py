@@ -129,7 +129,7 @@ class BulletHellEnv(gym.Env):
                 if self.latest_color_frame is not None:
                     try:
                         # Downscale for performance
-                        small_frame = cv2.resize(self.latest_color_frame, (84, 84), interpolation=cv2.INTER_AREA)
+                        small_frame = cv2.resize(self.latest_color_frame, (84, 84), interpolation=cv2.INTER_LINEAR)
                         mask = self.mask_generator.generate_mask(small_frame)
                         self.cached_mask = mask
                     except Exception as e:
@@ -264,7 +264,7 @@ class BulletHellEnv(gym.Env):
                 
                 # Resize and Grayscale
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY) if frame.shape[2] == 4 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                frame = cv2.resize(frame, (84, 84), interpolation=cv2.INTER_AREA)
+                frame = cv2.resize(frame, (84, 84), interpolation=cv2.INTER_LINEAR)
                 
                 if return_color:
                     return frame, color_frame
@@ -343,11 +343,17 @@ class BulletHellEnv(gym.Env):
             if keys:
                 for k in keys:
                     pydirectinput.keyDown(k)
-                time.sleep(self.action_duration)
+                
+                # Only sleep if we are rendering for human to see, otherwise run as fast as possible
+                if self.render_mode == "human":
+                    time.sleep(self.action_duration)
+                    
                 for k in keys:
                     pydirectinput.keyUp(k)
             else:
-                time.sleep(self.action_duration)  # Idle
+                # Only sleep if we are rendering for human to see, otherwise run as fast as possible
+                if self.render_mode == "human":
+                    time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
             if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
@@ -430,7 +436,7 @@ class BulletHellEnv(gym.Env):
             # If no cached mask yet (first few frames), compute synchronously
             if mask is None:
                 reward_h, reward_w = 84, 84
-                small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_AREA)
+                small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_LINEAR)
                 mask = self.mask_generator.generate_mask(small_frame)
             
             # Extract positions
