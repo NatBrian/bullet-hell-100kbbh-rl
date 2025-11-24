@@ -12,6 +12,7 @@ import mss
 import threading
 from collections import deque
 from gymnasium import spaces
+from generate_masks import BulletMaskGenerator
 
 # Try importing dxcam, but don't fail if it's not available (fallback to mss)
 try:
@@ -35,6 +36,8 @@ class BulletHellEnv(gym.Env):
         dead_streak=5,
         action_duration=0.01, # REACTION TIME AI PRESS KEY IN SECONDS
         save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
+        use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
+        bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
     ):
         super().__init__()
         self.window_title = window_title
@@ -48,6 +51,12 @@ class BulletHellEnv(gym.Env):
         self.action_duration = action_duration
         self.save_screenshots = save_screenshots
         self.last_screenshot_time = 0
+        self.use_bullet_distance_reward = use_bullet_distance_reward
+        self.bullet_reward_coef = bullet_reward_coef
+        
+        # Initialize bullet mask generator if needed
+        if self.use_bullet_distance_reward:
+            self.mask_generator = BulletMaskGenerator()
         
         if self.save_screenshots > 0:
             os.makedirs("game_screenshots", exist_ok=True)
@@ -164,8 +173,18 @@ class BulletHellEnv(gym.Env):
         
         return (left, top, right, bottom)
 
-    def _capture_frame(self):
-        """Captures a frame from the window."""
+    def _capture_frame(self, return_color=False):
+        """
+        Captures a frame from the window.
+        
+        Args:
+            return_color: If True, returns both grayscale and color (BGR) frames.
+                         If False, returns only grayscale frame (backward compatible).
+        
+        Returns:
+            If return_color=False: grayscale frame (84, 84)
+            If return_color=True: tuple of (grayscale_frame, color_frame_bgr)
+        """
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -211,10 +230,17 @@ class BulletHellEnv(gym.Env):
                         cv2.imwrite(filename, frame)
                         self.last_screenshot_time = current_time
 
+                # Store color frame if needed
+                color_frame = frame.copy() if return_color else None
+                
                 # Resize and Grayscale
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY) if frame.shape[2] == 4 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 frame = cv2.resize(frame, (84, 84), interpolation=cv2.INTER_AREA)
-                return frame
+                
+                if return_color:
+                    return frame, color_frame
+                else:
+                    return frame
             
             except Exception as e:
                 print(f"Capture failed (attempt {attempt+1}/{max_retries}): {e}")
@@ -280,10 +306,13 @@ class BulletHellEnv(gym.Env):
             time.sleep(self.action_duration) # Idle
 
         # 2. Capture & Process
-        # Frame skip: we already waited action_duration. 
-        # If we want true frame skip, we might repeat the action or just wait.
-        # For simplicity, we capture once after the action.
-        frame = self._capture_frame()
+        # Capture color frame if using bullet distance reward
+        if self.use_bullet_distance_reward:
+            frame, color_frame = self._capture_frame(return_color=True)
+        else:
+            frame = self._capture_frame()
+            color_frame = None
+        
         self.frame_stack.append(frame)
         
         # 3. Check Death
@@ -297,18 +326,25 @@ class BulletHellEnv(gym.Env):
                 terminated = True
         
         # 4. Reward
-        # This is the only feedback the AI gets.
-        # +1 for every "tick" it survives.
-        # -100 if it dies (screen goes dark).
-        # The AI tries to maximize this number over time.
-        reward = 1.0 if not terminated else -100.0
+        # Base reward: +1 for survival, -100 for death
+        base_reward = 1.0 if not terminated else -100.0
+        
+        # Add bullet distance shaping if enabled
+        if self.use_bullet_distance_reward and not terminated and color_frame is not None:
+            bullet_reward = self._compute_bullet_reward(color_frame)
+            reward = base_reward + bullet_reward
+        else:
+            reward = base_reward
+        
         self.episode_reward += reward
         self.steps += 1
         
         # 5. Info
         info = {
             "luminance": lum,
-            "episode_reward": self.episode_reward
+            "episode_reward": self.episode_reward,
+            "step_reward": reward,
+            "bullet_distance_enabled": self.use_bullet_distance_reward
         }
         
         # 6. Render
@@ -316,13 +352,65 @@ class BulletHellEnv(gym.Env):
             self._render_frame(frame, info)
 
         return self._get_obs(), reward, terminated, False, info
+    
+    def _compute_bullet_reward(self, color_frame):
+        """
+        Compute reward based on distance to nearest bullet.
+        Closer bullets = lower reward (penalize danger).
+        Farther bullets = higher reward (reward safety).
+        
+        Args:
+            color_frame: Full-resolution BGR frame
+        
+        Returns:
+            Bullet distance reward (float)
+        """
+        try:
+            # Generate mask
+            mask = self.mask_generator.generate_mask(color_frame)
+            
+            # Extract positions
+            ship_pos, bullet_positions = self.mask_generator.get_positions(mask)
+            
+            # If no ship or no bullets detected, return neutral reward
+            if ship_pos is None or len(bullet_positions) == 0:
+                return 0.0
+            
+            # Compute normalized distance to nearest bullet
+            frame_diagonal = np.sqrt(color_frame.shape[0]**2 + color_frame.shape[1]**2)
+            dist = self.mask_generator.compute_nearest_bullet_distance(
+                ship_pos, bullet_positions, normalize_by=frame_diagonal
+            )
+            
+            if dist is None:
+                return 0.0
+            
+            # Reward formulation:
+            # dist in [0, 1]: 0 = touching bullet, 1 = far corner
+            # We want to reward being far from bullets
+            # Scale: (dist - 0.5) gives range [-0.5, +0.5]
+            # Multiplied by coef (default 0.01) gives [-0.005, +0.005]
+            # This is small compared to base reward (+1) but provides shaping signal
+            return self.bullet_reward_coef * (dist - 0.5)
+        
+        except Exception as e:
+            # If mask generation fails, return neutral reward
+            # Don't crash the training
+            return 0.0
 
     def _render_frame(self, frame, info):
         display = cv2.resize(frame, (400, 400), interpolation=cv2.INTER_NEAREST)
         cv2.putText(display, f"Rew: {info['episode_reward']:.1f}", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(display, f"Lum: {info['luminance']:.1f}", (10, 70), 
+        cv2.putText(display, f"Step: {info['step_reward']:.3f}", (10, 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(display, f"Lum: {info['luminance']:.1f}", (10, 110), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        # Show bullet distance status
+        bd_status = "ON" if info['bullet_distance_enabled'] else "OFF"
+        cv2.putText(display, f"BD: {bd_status}", (10, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if info['bullet_distance_enabled'] else (128, 128, 128), 1)
         
         window_name = "Agent View"
         cv2.imshow(window_name, display)

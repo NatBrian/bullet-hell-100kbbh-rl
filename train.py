@@ -30,7 +30,9 @@ def train(args):
         alive_thresh=args.alive_thresh,
         dead_thresh=args.dead_thresh,
         dead_streak=args.dead_streak,
-        save_screenshots=args.save_screenshots
+        save_screenshots=args.save_screenshots,
+        use_bullet_distance_reward=not args.no_bullet_distance_reward,
+        bullet_reward_coef=args.bullet_reward_coef
     )
 
     # Agent
@@ -162,6 +164,10 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
     parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
+    
+    # Bullet distance reward params (enabled by default)
+    parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
+    parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
     
     args = parser.parse_args()
     train(args)
