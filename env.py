@@ -38,6 +38,8 @@ class BulletHellEnv(gym.Env):
         save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
+        use_enemy_distance_reward=False, # Enable enemy distance reward shaping
+        enemy_reward_coef=0.01, # Coefficient for enemy distance reward
     ):
         super().__init__()
         self.window_title = window_title
@@ -53,9 +55,11 @@ class BulletHellEnv(gym.Env):
         self.last_screenshot_time = 0
         self.use_bullet_distance_reward = use_bullet_distance_reward
         self.bullet_reward_coef = bullet_reward_coef
+        self.use_enemy_distance_reward = use_enemy_distance_reward
+        self.enemy_reward_coef = enemy_reward_coef
         
         # Initialize bullet mask generator if needed
-        if self.use_bullet_distance_reward:
+        if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
             self.mask_generator = BulletMaskGenerator()
         
         if self.save_screenshots > 0:
@@ -306,8 +310,8 @@ class BulletHellEnv(gym.Env):
             time.sleep(self.action_duration) # Idle
 
         # 2. Capture & Process
-        # Capture color frame if using bullet distance reward
-        if self.use_bullet_distance_reward:
+        # Capture color frame if using distance rewards
+        if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
             frame, color_frame = self._capture_frame(return_color=True)
         else:
             frame = self._capture_frame()
@@ -329,10 +333,10 @@ class BulletHellEnv(gym.Env):
         # Base reward: +1 for survival, -100 for death
         base_reward = 1.0 if not terminated else -100.0
         
-        # Add bullet distance shaping if enabled
-        if self.use_bullet_distance_reward and not terminated and color_frame is not None:
-            bullet_reward = self._compute_bullet_reward(color_frame)
-            reward = base_reward + bullet_reward
+        # Add distance shaping if enabled
+        if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) and not terminated and color_frame is not None:
+            dist_reward = self._compute_distance_rewards(color_frame)
+            reward = base_reward + dist_reward
         else:
             reward = base_reward
         
@@ -344,7 +348,9 @@ class BulletHellEnv(gym.Env):
             "luminance": lum,
             "episode_reward": self.episode_reward,
             "step_reward": reward,
-            "bullet_distance_enabled": self.use_bullet_distance_reward
+            "step_reward": reward,
+            "bullet_distance_enabled": self.use_bullet_distance_reward,
+            "enemy_distance_enabled": self.use_enemy_distance_reward
         }
         
         # 6. Render
@@ -353,49 +359,55 @@ class BulletHellEnv(gym.Env):
 
         return self._get_obs(), reward, terminated, False, info
     
-    def _compute_bullet_reward(self, color_frame):
+    def _compute_distance_rewards(self, color_frame):
         """
-        Compute reward based on distance to nearest bullet.
-        Closer bullets = lower reward (penalize danger).
-        Farther bullets = higher reward (reward safety).
+        Compute reward based on distance to nearest bullet and enemy.
         
         Args:
             color_frame: Full-resolution BGR frame
         
         Returns:
-            Bullet distance reward (float)
+            Total distance reward (float)
         """
         try:
             # Generate mask
             mask = self.mask_generator.generate_mask(color_frame)
             
             # Extract positions
-            ship_pos, bullet_positions = self.mask_generator.get_positions(mask)
+            ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
             
-            # If no ship or no bullets detected, return neutral reward
-            if ship_pos is None or len(bullet_positions) == 0:
-                return 0.0
-            
-            # Compute normalized distance to nearest bullet
+            total_reward = 0.0
             frame_diagonal = np.sqrt(color_frame.shape[0]**2 + color_frame.shape[1]**2)
-            dist = self.mask_generator.compute_nearest_bullet_distance(
-                ship_pos, bullet_positions, normalize_by=frame_diagonal
-            )
-            
-            if dist is None:
-                return 0.0
-            
-            # Reward formulation:
-            # dist in [0, 1]: 0 = touching bullet, 1 = far corner
-            # We want to reward being far from bullets
-            # Scale: (dist - 0.5) gives range [-0.5, +0.5]
-            # Multiplied by coef (default 0.01) gives [-0.005, +0.005]
-            # This is small compared to base reward (+1) but provides shaping signal
-            return self.bullet_reward_coef * (dist - 0.5)
+
+            # Bullet Reward
+            if self.use_bullet_distance_reward:
+                if ship_pos is not None and len(bullet_positions) > 0:
+                    # Use Cumulative Risk (Potential Field)
+                    # Risk = Sum(1/dist)
+                    # We want to minimize risk, so reward is negative risk
+                    risk = self.mask_generator.compute_cumulative_risk(
+                        ship_pos, bullet_positions, normalize_by=frame_diagonal
+                    )
+                    # Scale factor: Risk can be high (e.g. 1/0.01 = 100).
+                    # We want the penalty to be meaningful but not overwhelm base reward.
+                    # Default coef 0.01 -> Risk 100 * 0.01 = -1.0 (Death equivalent per step? Too high)
+                    # Let's scale it down. If dist=0.1 (close), risk=10. 10*0.01 = 0.1. Reasonable.
+                    total_reward -= self.bullet_reward_coef * risk
+
+            # Enemy Reward
+            if self.use_enemy_distance_reward:
+                if ship_pos is not None and len(enemy_positions) > 0:
+                    risk = self.mask_generator.compute_cumulative_risk(
+                        ship_pos, enemy_positions, normalize_by=frame_diagonal
+                    )
+                    total_reward -= self.enemy_reward_coef * risk
+
+            return total_reward
         
         except Exception as e:
             # If mask generation fails, return neutral reward
             # Don't crash the training
+            print(f"Reward computation failed: {e}")
             return 0.0
 
     def _render_frame(self, frame, info):
@@ -408,9 +420,11 @@ class BulletHellEnv(gym.Env):
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         # Show bullet distance status
+        # Show distance status
         bd_status = "ON" if info['bullet_distance_enabled'] else "OFF"
-        cv2.putText(display, f"BD: {bd_status}", (10, 150), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if info['bullet_distance_enabled'] else (128, 128, 128), 1)
+        ed_status = "ON" if info['enemy_distance_enabled'] else "OFF"
+        cv2.putText(display, f"BD: {bd_status} | ED: {ed_status}", (10, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
         
         window_name = "Agent View"
         cv2.imshow(window_name, display)

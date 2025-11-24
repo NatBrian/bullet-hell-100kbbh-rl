@@ -32,7 +32,9 @@ def train(args):
         dead_streak=args.dead_streak,
         save_screenshots=args.save_screenshots,
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
-        bullet_reward_coef=args.bullet_reward_coef
+        bullet_reward_coef=args.bullet_reward_coef,
+        use_enemy_distance_reward=not args.no_enemy_distance_reward,
+        enemy_reward_coef=args.enemy_reward_coef
     )
 
     # Agent
@@ -168,6 +170,10 @@ if __name__ == "__main__":
     # Bullet distance reward params (enabled by default)
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
     parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
+    
+    # Enemy distance reward params (enabled by default)
+    parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")
+    parser.add_argument("--enemy-reward-coef", type=float, default=0.01, help="Coefficient for enemy distance reward")
     
     args = parser.parse_args()
     train(args)

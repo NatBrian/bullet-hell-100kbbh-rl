@@ -18,6 +18,11 @@ SHIP_THRESHOLD = 30
 MASK_BACKGROUND = 0
 MASK_BULLET = 1
 MASK_SHIP = 2
+MASK_ENEMY = 3
+
+# Enemy Detection Constants
+ENEMY_BRIGHT_THRESHOLD = 215  # Pixel intensity to be considered part of a bright shape (border/fill)
+ENEMY_CENTER_MATCH_THRESHOLD = 25 # Similarity to background color to consider a shape "hollow"
 
 # Default background colors (Peach game background)
 DEFAULT_BG_COLORS_RGB = [
@@ -46,6 +51,22 @@ class BulletMaskGenerator:
         
         self.bg_colors_bgr = bg_colors_bgr
         self.ship_color_bgr = np.array(SHIP_COLOR_RGB[::-1], dtype=np.uint8)
+        
+        # Identify "dark" background colors (Peach) vs "light" background colors (White/Highlights)
+        # This is crucial for distinguishing Hollow Enemies (Peach center) from Filled Geometry (White center)
+        self.enemy_bg_colors_bgr = []
+        for c in self.bg_colors_bgr:
+            # Calculate grayscale intensity (BGR)
+            gray = 0.114*c[0] + 0.587*c[1] + 0.299*c[2]
+            if gray < ENEMY_BRIGHT_THRESHOLD: 
+                self.enemy_bg_colors_bgr.append(c)
+        
+        if not self.enemy_bg_colors_bgr:
+            # Fallback if all BGs are bright (unlikely)
+            self.enemy_bg_colors_bgr = self.bg_colors_bgr
+            
+        # Convert to numpy array for vectorized operations
+        self.enemy_bg_colors_bgr = np.array(self.enemy_bg_colors_bgr)
     
     def generate_mask(self, frame_bgr):
         """
@@ -75,6 +96,47 @@ class BulletMaskGenerator:
         is_ship = (dist_ship < SHIP_THRESHOLD)
         mask[is_ship] = MASK_SHIP
         
+        # 4. Detect Enemies -> 3
+        # Enemies are "hollow" bright shapes (white border, background color inside).
+        # Background geometry is "filled" bright shapes (white border, white inside).
+        
+        # A. Create a binary mask of bright pixels (potential enemies or bg geometry)
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        _, bright_mask = cv2.threshold(gray, ENEMY_BRIGHT_THRESHOLD, 255, cv2.THRESH_BINARY)
+        
+        # B. Find connected components (blobs)
+        # connectivity=8 allows diagonal connections, important for diamond shapes
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, connectivity=8)
+        
+        # C. Iterate through blobs to classify them
+        for i in range(1, num_labels): # Skip background label 0
+            # Get centroid of the blob
+            cx, cy = int(centroids[i][0]), int(centroids[i][1])
+            
+            # Ensure centroid is within bounds (safety check)
+            if cx < 0 or cx >= frame_bgr.shape[1] or cy < 0 or cy >= frame_bgr.shape[0]:
+                continue
+            
+            # Check the color at the centroid
+            # If it's a hollow diamond, the centroid falls in the hole (background color).
+            # If it's a filled diamond, the centroid falls on the fill (bright color).
+            center_pixel = frame_bgr[cy, cx]
+            
+            # Check if center pixel matches any of the known background colors
+            # Vectorized distance calculation against all bg colors
+            # Check if center pixel matches any of the known background colors
+            # Vectorized distance calculation against DARK background colors only
+            dists = np.linalg.norm(self.enemy_bg_colors_bgr - center_pixel, axis=1)
+            is_hollow = np.any(dists < ENEMY_CENTER_MATCH_THRESHOLD)
+            
+            if is_hollow:
+                # This blob is an ENEMY (Hollow)
+                # Mark its pixels as MASK_ENEMY
+                # Ensure we don't overwrite the SHIP if it overlaps (though unlikely)
+                # We DO overwrite BULLET (1) because these white pixels were likely initialized as bullets
+                component_mask = (labels == i)
+                mask[component_mask & (mask != MASK_SHIP)] = MASK_ENEMY
+        
         return mask
     
     def get_positions(self, mask):
@@ -87,6 +149,7 @@ class BulletMaskGenerator:
         Returns:
             ship_pos: (y, x) tuple of ship center, or None if not found
             bullet_positions: List of (y, x) tuples for bullet centers
+            enemy_positions: List of (y, x) tuples for enemy centers
         """
         # Find ship position (centroid of all ship pixels)
         ship_pixels = np.where(mask == MASK_SHIP)
@@ -108,8 +171,20 @@ class BulletMaskGenerator:
                 bullet_y = int(np.mean(bullet_pixels[0]))
                 bullet_x = int(np.mean(bullet_pixels[1]))
                 bullet_positions.append((bullet_y, bullet_x))
+
+        # Find enemy positions (use connected components for each enemy)
+        enemy_mask = (mask == MASK_ENEMY).astype(np.uint8)
+        num_labels_enemy, labels_enemy = cv2.connectedComponents(enemy_mask)
         
-        return ship_pos, bullet_positions
+        enemy_positions = []
+        for label in range(1, num_labels_enemy):  # Skip 0 (background)
+            enemy_pixels = np.where(labels_enemy == label)
+            if len(enemy_pixels[0]) > 0:
+                enemy_y = int(np.mean(enemy_pixels[0]))
+                enemy_x = int(np.mean(enemy_pixels[1]))
+                enemy_positions.append((enemy_y, enemy_x))
+        
+        return ship_pos, bullet_positions, enemy_positions
     
     def compute_nearest_bullet_distance(self, ship_pos, bullet_positions, normalize_by=None):
         """
@@ -137,6 +212,68 @@ class BulletMaskGenerator:
             min_dist = min_dist / normalize_by
         
         return min_dist
+
+    def compute_nearest_enemy_distance(self, ship_pos, enemy_positions, normalize_by=None):
+        """
+        Compute distance to nearest enemy, optionally normalized.
+        
+        Args:
+            ship_pos: (y, x) tuple
+            enemy_positions: List of (y, x) tuples
+            normalize_by: If provided, divide distance by this value (e.g., frame diagonal)
+        
+        Returns:
+            Distance to nearest enemy (float), or None if no enemies or no ship
+        """
+        if ship_pos is None or len(enemy_positions) == 0:
+            return None
+        
+        ship_y, ship_x = ship_pos
+        min_dist = float('inf')
+        
+        for enemy_y, enemy_x in enemy_positions:
+            dist = np.sqrt((ship_y - enemy_y)**2 + (ship_x - enemy_x)**2)
+            min_dist = min(min_dist, dist)
+        
+        if normalize_by is not None:
+            min_dist = min_dist / normalize_by
+        
+        return min_dist
+
+    def compute_cumulative_risk(self, ship_pos, entity_positions, normalize_by=None):
+        """
+        Compute cumulative risk based on inverse distance to all entities.
+        Risk = Sum(1 / (distance + epsilon))
+        
+        Args:
+            ship_pos: (y, x) tuple
+            entity_positions: List of (y, x) tuples
+            normalize_by: If provided, divide distances by this value
+            
+        Returns:
+            Total risk score (float). Higher is worse.
+        """
+        if ship_pos is None or len(entity_positions) == 0:
+            return 0.0
+            
+        # Convert to numpy array for vectorization
+        # ship_pos is (y, x), entity_positions is list of (y, x)
+        ship_arr = np.array(ship_pos)
+        entities_arr = np.array(entity_positions)
+        
+        # Compute Euclidean distances
+        # shape: (N,)
+        dists = np.linalg.norm(entities_arr - ship_arr, axis=1)
+        
+        if normalize_by is not None:
+            dists = dists / normalize_by
+            
+        # Compute Inverse Distance (Risk)
+        # Add small epsilon to avoid division by zero
+        epsilon = 1e-6
+        risk_scores = 1.0 / (dists + epsilon)
+        
+        return np.sum(risk_scores)
 
 def analyze_background_colors(image_files, num_samples=50):
     """
@@ -224,6 +361,7 @@ def generate_masks(input_dir, output_dir, visualize=True, use_morphology=True):
                 # 2 (Ship) -> Red (0, 0, 255) - BGR
                 vis_img[mask == MASK_BULLET] = [0, 255, 0]
                 vis_img[mask == MASK_SHIP] = [0, 0, 255]
+                vis_img[mask == MASK_ENEMY] = [255, 0, 0] # Blue for Enemy
                 
                 vis_path = os.path.join(output_dir, f"{name}_vis{ext}")
                 cv2.imwrite(vis_path, vis_img)
