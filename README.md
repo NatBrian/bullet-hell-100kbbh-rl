@@ -2,6 +2,8 @@
 
 This project implements a production-ready Deep Q-Network (DQN) agent to play the "100KBBH" bullet hell game. It uses visual input (screen capture) and simulates keyboard output to control the game, learning to dodge bullets purely through trial and error.
 
+![100KBBH-demo](assets/demo.gif)
+
 ## Key Features
 
 *   **Visual Learning**: The agent plays using only pixels. It does not access the game's internal memory.

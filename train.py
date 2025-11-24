@@ -133,7 +133,7 @@ if __name__ == "__main__":
     
     # Env params
     parser.add_argument("--window_title", type=str, default="100KBBH")
-    parser.add_argument("--game_path", type=str, default="100KBBH-1.0.3.exe", help="Path to game executable")
+    parser.add_argument("--game_path", type=str, default="assets/100KBBH-1.0.3.exe", help="Path to game executable")
     parser.add_argument("--render", action="store_true", help="Show agent view")
     parser.add_argument("--frame_skip", type=int, default=4)
     parser.add_argument("--stack_size", type=int, default=4)
