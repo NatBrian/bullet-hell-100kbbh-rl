@@ -48,8 +48,8 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run training in batches, resuming checkpoints between runs.")
-    parser.add_argument("--batches", type=int, default=2, help="Number of batches to run")
-    parser.add_argument("--episodes-per-batch", type=int, default=50, help="Episodes per batch")
+    parser.add_argument("--batches", type=int, default=100, help="Number of batches to run")
+    parser.add_argument("--episodes-per-batch", type=int, default=100, help="Episodes per batch")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"), help="Checkpoint directory")
     parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN")
     parser.add_argument("--render", action="store_true", help="Render agent view")

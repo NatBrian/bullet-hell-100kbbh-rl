@@ -10,6 +10,9 @@ import win32api
 import pydirectinput
 import mss
 from collections import deque
+
+# Disable fail-safe to prevent mouse corner detection from stopping training
+pydirectinput.FAILSAFE = False
 from gymnasium import spaces
 from generate_masks import BulletMaskGenerator
 
