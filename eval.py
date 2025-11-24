@@ -18,7 +18,11 @@ def evaluate(args):
         window_title=args.window_title,
         render_mode="human" if args.render else None,
         frame_skip=args.frame_skip,
-        stack_size=args.stack_size
+        stack_size=args.stack_size,
+        use_bullet_distance_reward=not args.no_bullet_distance_reward,
+        bullet_reward_coef=args.bullet_reward_coef,
+        use_enemy_distance_reward=not args.no_enemy_distance_reward,
+        enemy_reward_coef=args.enemy_reward_coef
     )
 
     agent = DQNAgent(
@@ -63,6 +67,11 @@ if __name__ == "__main__":
     eval_parser.add_argument("--frame_skip", type=int, default=1)
     eval_parser.add_argument("--stack_size", type=int, default=4)
     eval_parser.add_argument("--cuda", action="store_true")
+    # Reward shaping params (match training defaults)
+    eval_parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
+    eval_parser.add_argument("--bullet-reward-coef", type=float, default=0.1, help="Coefficient for bullet distance reward")
+    eval_parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")
+    eval_parser.add_argument("--enemy-reward-coef", type=float, default=0.05, help="Coefficient for enemy distance reward")
 
     # Report command
     report_parser = subparsers.add_parser("report")

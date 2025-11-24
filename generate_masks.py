@@ -49,7 +49,8 @@ class BulletMaskGenerator:
             # Convert default RGB to BGR
             bg_colors_bgr = [np.array(c[::-1], dtype=np.uint8) for c in DEFAULT_BG_COLORS_RGB]
         
-        self.bg_colors_bgr = bg_colors_bgr
+        # Store as numpy array for fast color distance checks
+        self.bg_colors_bgr = np.array(bg_colors_bgr, dtype=np.uint8)
         self.ship_color_bgr = np.array(SHIP_COLOR_RGB[::-1], dtype=np.uint8)
         
         # Identify "dark" background colors (Peach) vs "light" background colors (White/Highlights)
@@ -83,6 +84,15 @@ class BulletMaskGenerator:
         """
         # 1. Initialize mask as BULLET (1) by default
         mask = np.ones(frame_bgr.shape[:2], dtype=np.uint8) * MASK_BULLET
+
+        # 2. Mark background (0) based on proximity to known background colors
+        # Compute per-pixel Manhattan distance to each background color and take the minimum
+        if self.bg_colors_bgr.size > 0:
+            diff_bg = np.abs(frame_bgr.astype(np.int16)[..., None, :] - self.bg_colors_bgr[None, None, :, :])
+            dist_bg = np.sum(diff_bg, axis=3)  # Shape: (H, W, num_bg_colors)
+            min_dist_bg = dist_bg.min(axis=2)
+            bg_pixels = min_dist_bg < BG_THRESHOLD
+            mask[bg_pixels] = MASK_BACKGROUND
         
         # 2. Detect Background -> 0
         is_bg = np.zeros(frame_bgr.shape[:2], dtype=bool)

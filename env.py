@@ -9,7 +9,6 @@ import win32con
 import win32api
 import pydirectinput
 import mss
-import threading
 from collections import deque
 from gymnasium import spaces
 from generate_masks import BulletMaskGenerator
@@ -61,14 +60,6 @@ class BulletHellEnv(gym.Env):
         # Initialize bullet mask generator if needed
         if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
             self.mask_generator = BulletMaskGenerator()
-            
-            # Parallel mask generation to avoid blocking step()
-            self.latest_color_frame = None
-            self.cached_mask = None
-            self.mask_lock = threading.Lock()
-            self.mask_worker_running = True
-            self.mask_thread = threading.Thread(target=self._mask_worker, daemon=True)
-            self.mask_thread.start()
         
         if self.save_screenshots > 0:
             os.makedirs("game_screenshots", exist_ok=True)
@@ -125,21 +116,6 @@ class BulletHellEnv(gym.Env):
             self.mss_sct = mss.mss()
             print("Using mss for screen capture.")
     
-    def _mask_worker(self):
-        """Background thread for parallel mask generation."""
-        while self.mask_worker_running:
-            with self.mask_lock:
-                if self.latest_color_frame is not None:
-                    try:
-                        # Downscale for performance
-                        small_frame = cv2.resize(self.latest_color_frame, (84, 84), interpolation=cv2.INTER_LINEAR)
-                        mask = self.mask_generator.generate_mask(small_frame)
-                        self.cached_mask = mask
-                    except Exception as e:
-                        print(f"Mask generation error in worker: {e}")
-                        self.cached_mask = None
-            time.sleep(0.001)  # Small sleep to prevent busy-waiting
-
     def _get_window_rect(self):
         """Finds the game window and returns its bounding box."""
         def find_window_handle():
@@ -382,7 +358,8 @@ class BulletHellEnv(gym.Env):
             if terminated:
                 frame_reward = -100.0
             else:
-                frame_reward = 1.0
+                # Avoid granting survival reward on dark frames that precede death detection
+                frame_reward = 0.0 if lum < self.dead_thresh else 1.0
                 
                 # Add distance shaping if enabled
                 if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) and color_frame is not None:
@@ -432,16 +409,10 @@ class BulletHellEnv(gym.Env):
             Total distance reward (float)
         """
         try:
-            # Update color frame for background worker
-            with self.mask_lock:
-                self.latest_color_frame = color_frame
-                mask = self.cached_mask  # Use previously computed mask (1 frame delay)
-            
-            # If no cached mask yet (first few frames), compute synchronously
-            if mask is None:
-                reward_h, reward_w = 84, 84
-                small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_LINEAR)
-                mask = self.mask_generator.generate_mask(small_frame)
+            # Compute mask on the current frame to align reward with transition
+            reward_h, reward_w = 84, 84
+            small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_LINEAR)
+            mask = self.mask_generator.generate_mask(small_frame)
             
             # Extract positions
             ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
@@ -523,11 +494,5 @@ class BulletHellEnv(gym.Env):
         if hasattr(self, 'pressed_keys'):
             self._release_all_keys()
 
-        # Stop mask worker thread
-        if hasattr(self, 'mask_worker_running'):
-            self.mask_worker_running = False
-            if hasattr(self, 'mask_thread'):
-                self.mask_thread.join(timeout=1.0)
-        
         if self.render_mode == "human":
             cv2.destroyAllWindows()
