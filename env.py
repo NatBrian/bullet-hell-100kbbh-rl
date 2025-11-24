@@ -106,6 +106,9 @@ class BulletHellEnv(gym.Env):
         
         # Initialize capture method
         self._init_capture()
+        
+        # Input State Tracking
+        self.pressed_keys = set()
 
     def _init_capture(self):
         """Initialize dxcam or mss."""
@@ -301,7 +304,8 @@ class BulletHellEnv(gym.Env):
             time.sleep(2)
             self.window_rect = self._get_window_rect()
 
-        # 2. Press SPACE to restart
+        # 2. Release all keys and Press SPACE to restart
+        self._release_all_keys()
         pydirectinput.press('space')
         
         # 3. Wait for brightness (alive)
@@ -338,22 +342,22 @@ class BulletHellEnv(gym.Env):
         
         # Execute action for frame_skip frames
         for frame_idx in range(self.frame_skip):
-            # 1. Perform Action
-            keys = self.key_map[action]
-            if keys:
-                for k in keys:
-                    pydirectinput.keyDown(k)
-                
-                # Only sleep if we are rendering for human to see, otherwise run as fast as possible
-                if self.render_mode == "human":
-                    time.sleep(self.action_duration)
-                    
-                for k in keys:
-                    pydirectinput.keyUp(k)
-            else:
-                # Only sleep if we are rendering for human to see, otherwise run as fast as possible
-                if self.render_mode == "human":
-                    time.sleep(self.action_duration)  # Idle
+            # 1. Perform Action (Stateful)
+            target_keys = set(self.key_map[action])
+            
+            # Release keys that are no longer needed
+            for k in self.pressed_keys - target_keys:
+                pydirectinput.keyUp(k)
+            
+            # Press new keys
+            for k in target_keys - self.pressed_keys:
+                pydirectinput.keyDown(k)
+            
+            self.pressed_keys = target_keys
+
+            # Only sleep if we are rendering for human to see, otherwise run as fast as possible
+            if self.render_mode == "human":
+                time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
             if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
@@ -508,7 +512,17 @@ class BulletHellEnv(gym.Env):
             
         cv2.waitKey(1)
 
+    def _release_all_keys(self):
+        """Releases all currently pressed keys."""
+        for k in self.pressed_keys:
+            pydirectinput.keyUp(k)
+        self.pressed_keys.clear()
+
     def close(self):
+        # Release any stuck keys
+        if hasattr(self, 'pressed_keys'):
+            self._release_all_keys()
+
         # Stop mask worker thread
         if hasattr(self, 'mask_worker_running'):
             self.mask_worker_running = False
