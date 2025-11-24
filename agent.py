@@ -10,7 +10,7 @@ class CNNQNetwork(nn.Module):
     def __init__(self, input_shape, num_actions):
         super(CNNQNetwork, self).__init__()
         # input_shape is (C, H, W) -> (4, 84, 84)
-        # The CNN "sees" the game by detecting patterns in the pixel grid.
+        # Enhanced architecture for bullet hell: More layers to detect complex patterns
         # Layer 1: Detects simple edges and corners (e.g., the edge of a bullet).
         self.features = nn.Sequential(
             nn.Conv2d(input_shape[0], 32, kernel_size=8, stride=4),
@@ -18,19 +18,21 @@ class CNNQNetwork(nn.Module):
             # Layer 2: Combines edges into shapes (e.g., a square bullet, the player ship).
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
-            # Layer 3: Detects complex relationships (e.g., "bullet approaching player").
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            # Layer 3: Detects spatial relationships (e.g., "bullet approaching player").
+            nn.Conv2d(64, 128, kernel_size=3, stride=1),
+            nn.ReLU(),
+            # Layer 4: Detects complex multi-bullet patterns and trajectories
+            nn.Conv2d(128, 128, kernel_size=3, stride=1),
             nn.ReLU()
         )
         
         # Calculate FC input size
-        # 84x84 -> 8x8/4 -> 21x21 -> 4x4/2 -> 11x11 -> 3x3/1 -> 7x7?
-        # Let's calculate:
-        # 84 -> (84-8)/4 + 1 = 20
-        # 20 -> (20-4)/2 + 1 = 9
-        # 9 -> (9-3)/1 + 1 = 7
-        # So 64 * 7 * 7 = 3136
-        self.fc_input_dim = 64 * 7 * 7
+        # 84x84 -> conv1(k=8,s=4) -> 20x20
+        # 20x20 -> conv2(k=4,s=2) -> 9x9
+        # 9x9 -> conv3(k=3,s=1) -> 7x7
+        # 7x7 -> conv4(k=3,s=1) -> 5x5
+        # So 128 * 5 * 5 = 3200
+        self.fc_input_dim = 128 * 5 * 5
         
         self.fc = nn.Sequential(
             nn.Linear(self.fc_input_dim, 512),

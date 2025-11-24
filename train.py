@@ -140,7 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("--window_title", type=str, default="100KBBH")
     parser.add_argument("--game_path", type=str, default="assets/100KBBH-1.0.3.exe", help="Path to game executable")
     parser.add_argument("--render", action="store_true", help="Show agent view")
-    parser.add_argument("--frame_skip", type=int, default=4)
+    parser.add_argument("--frame_skip", type=int, default=1)
     parser.add_argument("--stack_size", type=int, default=4)
     parser.add_argument("--alive_thresh", type=float, default=150.0)
     parser.add_argument("--dead_thresh", type=float, default=130.0)
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--target_update_freq", type=int, default=1000)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_end", type=float, default=0.1)
-    parser.add_argument("--epsilon_decay_steps", type=int, default=50000)
+    parser.add_argument("--epsilon_decay_steps", type=int, default=200000, help="Epsilon decay steps (increased for better exploration)")
     parser.add_argument("--save_freq", type=int, default=50)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--log_dir", type=str, default="logs")
@@ -169,11 +169,11 @@ if __name__ == "__main__":
     
     # Bullet distance reward params (enabled by default)
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
-    parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
+    parser.add_argument("--bullet-reward-coef", type=float, default=0.1, help="Coefficient for bullet distance reward (increased from 0.01)")
     
     # Enemy distance reward params (enabled by default)
     parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")
-    parser.add_argument("--enemy-reward-coef", type=float, default=0.01, help="Coefficient for enemy distance reward")
+    parser.add_argument("--enemy-reward-coef", type=float, default=0.05, help="Coefficient for enemy distance reward (increased from 0.01)")
     
     args = parser.parse_args()
     train(args)

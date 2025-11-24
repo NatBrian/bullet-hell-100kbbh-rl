@@ -60,7 +60,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--episodes", type=int, default=5)
     eval_parser.add_argument("--window_title", type=str, default="100KBBH")
     eval_parser.add_argument("--render", action="store_true")
-    eval_parser.add_argument("--frame_skip", type=int, default=4)
+    eval_parser.add_argument("--frame_skip", type=int, default=1)
     eval_parser.add_argument("--stack_size", type=int, default=4)
     eval_parser.add_argument("--cuda", action="store_true")
 
