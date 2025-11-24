@@ -370,14 +370,20 @@ class BulletHellEnv(gym.Env):
             Total distance reward (float)
         """
         try:
-            # Generate mask
-            mask = self.mask_generator.generate_mask(color_frame)
+            # Optimization: Downscale frame for faster mask generation
+            # User confirmed bullets are large enough to be visible at 84x84.
+            # Matching observation size (84x84) unifies the pipeline and maximizes speed.
+            reward_h, reward_w = 84, 84
+            small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_AREA)
+            
+            # Generate mask on downscaled frame
+            mask = self.mask_generator.generate_mask(small_frame)
             
             # Extract positions
             ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
             
             total_reward = 0.0
-            frame_diagonal = np.sqrt(color_frame.shape[0]**2 + color_frame.shape[1]**2)
+            frame_diagonal = np.sqrt(reward_h**2 + reward_w**2)
 
             # Bullet Reward
             if self.use_bullet_distance_reward:

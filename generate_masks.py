@@ -11,8 +11,8 @@ from collections import Counter
 SHIP_COLOR_RGB = (255, 82, 163)
 
 # Thresholds
-BG_THRESHOLD = 15   # Tightened to distinguish off-white BG from white bullets
-SHIP_THRESHOLD = 30 
+BG_THRESHOLD = 25   # Adjusted for Manhattan distance (was 15)
+SHIP_THRESHOLD = 50 # Adjusted for Manhattan distance (was 30) 
 
 # Mask Values
 MASK_BACKGROUND = 0
@@ -22,7 +22,7 @@ MASK_ENEMY = 3
 
 # Enemy Detection Constants
 ENEMY_BRIGHT_THRESHOLD = 215  # Pixel intensity to be considered part of a bright shape (border/fill)
-ENEMY_CENTER_MATCH_THRESHOLD = 25 # Similarity to background color to consider a shape "hollow"
+ENEMY_CENTER_MATCH_THRESHOLD = 40 # Adjusted for Manhattan distance (was 25)
 
 # Default background colors (Peach game background)
 DEFAULT_BG_COLORS_RGB = [
@@ -86,56 +86,86 @@ class BulletMaskGenerator:
         
         # 2. Detect Background -> 0
         is_bg = np.zeros(frame_bgr.shape[:2], dtype=bool)
+        
+        # Optimization: Use Manhattan distance (sum of absolute differences) instead of Euclidean
+        # This is significantly faster as it avoids square and sqrt operations
         for bg_c in self.bg_colors_bgr:
-            dist = np.linalg.norm(frame_bgr - bg_c, axis=2)
+            # diff = np.abs(frame_bgr - bg_c) -> Sum over channels
+            # We can use cv2.absdiff for even more speed if needed, but numpy is okay
+            diff = np.abs(frame_bgr.astype(np.int16) - bg_c.astype(np.int16))
+            dist = np.sum(diff, axis=2)
             is_bg |= (dist < BG_THRESHOLD)
         mask[is_bg] = MASK_BACKGROUND
         
-        # 3. Detect Ship -> 2
-        dist_ship = np.linalg.norm(frame_bgr - self.ship_color_bgr, axis=2)
-        is_ship = (dist_ship < SHIP_THRESHOLD)
-        mask[is_ship] = MASK_SHIP
+        # 3. Detect Ship -> 2 (and Pink Bullets)
+        # The ship is Pink. Some bullets are also Pink.
+        # Strategy: Find all pink pixels. The LARGEST pink blob is the Ship. The rest are Bullets.
+        diff_ship = np.abs(frame_bgr.astype(np.int16) - self.ship_color_bgr.astype(np.int16))
+        dist_ship = np.sum(diff_ship, axis=2)
+        is_pink = (dist_ship < SHIP_THRESHOLD)
+        
+        # Connected components on Pink pixels
+        # uint8 conversion needed for connectedComponents
+        pink_mask = is_pink.astype(np.uint8)
+        num_pink, labels_pink, stats_pink, centroids_pink = cv2.connectedComponentsWithStats(pink_mask, connectivity=8)
+        
+        if num_pink > 1:
+            # Find the label with the largest area (excluding background 0)
+            # stats shape: (N, 5). Column 4 is Area (cv2.CC_STAT_AREA)
+            areas = stats_pink[1:, cv2.CC_STAT_AREA]
+            largest_label_idx = np.argmax(areas) + 1 # +1 because we skipped 0
+            
+            # Mark the largest blob as SHIP
+            mask[labels_pink == largest_label_idx] = MASK_SHIP
+            
+            # Mark other pink blobs as BULLETS (override default 1, but good to be explicit)
+            # Actually, mask is initialized to 1 (BULLET). 
+            # So we just need to ensure we don't mark them as SHIP.
+            # But wait, if we initialized to BULLET, and then set BG to 0, 
+            # the pink pixels that are NOT the ship are currently 1 (BULLET) or 0 (BG)?
+            # They were not detected as BG. So they are 1.
+            # So we only need to set the SHIP.
+            pass
+        else:
+            # No pink blobs found? Or only background?
+            pass
         
         # 4. Detect Enemies -> 3
-        # Enemies are "hollow" bright shapes (white border, background color inside).
-        # Background geometry is "filled" bright shapes (white border, white inside).
+        # Enemies are "hollow" bright shapes (white border with a hole inside).
+        # Background geometry is "filled" bright shapes (no hole).
+        # Use Contour Hierarchy to distinguish: hollow shapes have child contours.
         
         # A. Create a binary mask of bright pixels (potential enemies or bg geometry)
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         _, bright_mask = cv2.threshold(gray, ENEMY_BRIGHT_THRESHOLD, 255, cv2.THRESH_BINARY)
         
-        # B. Find connected components (blobs)
-        # connectivity=8 allows diagonal connections, important for diamond shapes
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(bright_mask, connectivity=8)
+        # B. Find contours with hierarchy
+        # RETR_CCOMP retrieves 2-level hierarchy (external and holes)
+        # hierarchy format: [Next, Previous, First_Child, Parent]
+        contours, hierarchy = cv2.findContours(bright_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         
-        # C. Iterate through blobs to classify them
-        for i in range(1, num_labels): # Skip background label 0
-            # Get centroid of the blob
-            cx, cy = int(centroids[i][0]), int(centroids[i][1])
+        if hierarchy is not None and len(contours) > 0:
+            hierarchy = hierarchy[0]  # Remove extra dimension
             
-            # Ensure centroid is within bounds (safety check)
-            if cx < 0 or cx >= frame_bgr.shape[1] or cy < 0 or cy >= frame_bgr.shape[0]:
-                continue
-            
-            # Check the color at the centroid
-            # If it's a hollow diamond, the centroid falls in the hole (background color).
-            # If it's a filled diamond, the centroid falls on the fill (bright color).
-            center_pixel = frame_bgr[cy, cx]
-            
-            # Check if center pixel matches any of the known background colors
-            # Vectorized distance calculation against all bg colors
-            # Check if center pixel matches any of the known background colors
-            # Vectorized distance calculation against DARK background colors only
-            dists = np.linalg.norm(self.enemy_bg_colors_bgr - center_pixel, axis=1)
-            is_hollow = np.any(dists < ENEMY_CENTER_MATCH_THRESHOLD)
-            
-            if is_hollow:
-                # This blob is an ENEMY (Hollow)
-                # Mark its pixels as MASK_ENEMY
-                # Ensure we don't overwrite the SHIP if it overlaps (though unlikely)
-                # We DO overwrite BULLET (1) because these white pixels were likely initialized as bullets
-                component_mask = (labels == i)
-                mask[component_mask & (mask != MASK_SHIP)] = MASK_ENEMY
+            # C. Iterate through contours to find hollow shapes
+            for i in range(len(contours)):
+                # Check if this contour has a child (hole inside)
+                # hierarchy[i][2] is First_Child
+                has_hole = hierarchy[i][2] != -1
+                
+                # Check if this is a top-level contour (not a hole itself)
+                # hierarchy[i][3] is Parent
+                is_outer = hierarchy[i][3] == -1
+                
+                if is_outer and has_hole:
+                    # This is a hollow shape (ENEMY)
+                    # Fill the contour area with MASK_ENEMY
+                    # Use a temporary mask to avoid overwriting SHIP
+                    temp_mask = np.zeros(frame_bgr.shape[:2], dtype=np.uint8)
+                    cv2.drawContours(temp_mask, contours, i, 1, -1)  # -1 fills the contour
+                    
+                    # Apply to main mask, preserving SHIP
+                    mask[(temp_mask == 1) & (mask != MASK_SHIP)] = MASK_ENEMY
         
         return mask
     
