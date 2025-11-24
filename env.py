@@ -186,12 +186,12 @@ class BulletHellEnv(gym.Env):
         Captures a frame from the window.
         
         Args:
-            return_color: If True, returns both grayscale and color (BGR) frames.
-                         If False, returns only grayscale frame (backward compatible).
+            return_color: If True, returns both grayscale and downscaled color (BGR) frames.
+                         If False, returns only the grayscale frame.
         
         Returns:
             If return_color=False: grayscale frame (84, 84)
-            If return_color=True: tuple of (grayscale_frame, color_frame_bgr)
+            If return_color=True: tuple of (grayscale_frame, color_frame_bgr) where color_frame_bgr is 84x84
         """
         max_retries = 3
         for attempt in range(max_retries):
@@ -222,11 +222,10 @@ class BulletHellEnv(gym.Env):
                 if frame is None: # Fallback to mss if dxcam failed or is not used
                     if self.mss_sct is None:
                         self.mss_sct = mss.mss()
-                    with self.mss_sct as sct:
-                        monitor = {"top": top, "left": left, "width": width, "height": height}
-                        img = sct.grab(monitor)
-                        frame = np.array(img)
-                        frame = frame[:, :, :3] # BGRA -> BGR
+                    monitor = {"top": top, "left": left, "width": width, "height": height}
+                    img = self.mss_sct.grab(monitor)
+                    frame = np.array(img)
+                    frame = frame[:, :, :3] # BGRA -> BGR
                 
                 # Save screenshot if enabled and interval passed
                 if self.save_screenshots > 0:
@@ -238,17 +237,14 @@ class BulletHellEnv(gym.Env):
                         cv2.imwrite(filename, frame)
                         self.last_screenshot_time = current_time
 
-                # Store color frame if needed
-                color_frame = frame.copy() if return_color else None
-                
-                # Resize and Grayscale
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY) if frame.shape[2] == 4 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                frame = cv2.resize(frame, (84, 84), interpolation=cv2.INTER_LINEAR)
+                # Downscale once and derive grayscale from the small frame
+                small_frame = cv2.resize(frame, (84, 84), interpolation=cv2.INTER_LINEAR)
+                gray_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
                 
                 if return_color:
-                    return frame, color_frame
+                    return gray_frame, small_frame
                 else:
-                    return frame
+                    return gray_frame
             
             except Exception as e:
                 print(f"Capture failed (attempt {attempt+1}/{max_retries}): {e}")
@@ -296,9 +292,17 @@ class BulletHellEnv(gym.Env):
             pydirectinput.press('space') # Keep tapping space if stuck on death screen
 
         # 4. Fill stack
-        frame = self._capture_frame()
+        use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward
+        if use_mask:
+            frame_gray, frame_color = self._capture_frame(return_color=True)
+            mask = self.mask_generator.generate_mask(frame_color)
+            obs_frame = mask
+        else:
+            frame_gray = self._capture_frame()
+            obs_frame = frame_gray
+
         for _ in range(self.stack_size):
-            self.frame_stack.append(frame)
+            self.frame_stack.append(obs_frame)
         
         return self._get_obs(), {}
 
@@ -313,39 +317,45 @@ class BulletHellEnv(gym.Env):
         """
         total_reward = 0.0
         terminated = False
-        last_frame = None
+        last_frame = None  # what goes into the stack
+        last_render_frame = None  # what we show in render mode (original grayscale)
         last_lum = 0.0
         
         # Execute action for frame_skip frames
         for frame_idx in range(self.frame_skip):
             # 1. Perform Action (Stateful)
             target_keys = set(self.key_map[action])
+            if action != self.last_action:
+                # Release keys that are no longer needed
+                for k in self.pressed_keys - target_keys:
+                    pydirectinput.keyUp(k)
+                
+                # Press new keys
+                for k in target_keys - self.pressed_keys:
+                    pydirectinput.keyDown(k)
+                
+                self.pressed_keys = target_keys
             
-            # Release keys that are no longer needed
-            for k in self.pressed_keys - target_keys:
-                pydirectinput.keyUp(k)
-            
-            # Press new keys
-            for k in target_keys - self.pressed_keys:
-                pydirectinput.keyDown(k)
-            
-            self.pressed_keys = target_keys
-
             # Only sleep if we are rendering for human to see, otherwise run as fast as possible
             if self.render_mode == "human":
                 time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
-            if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
-                frame, color_frame = self._capture_frame(return_color=True)
+            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward
+            if use_mask:
+                gray_frame, color_frame = self._capture_frame(return_color=True)
+                mask = self.mask_generator.generate_mask(color_frame)
+                obs_frame = mask
             else:
-                frame = self._capture_frame()
-                color_frame = None
+                gray_frame = self._capture_frame()
+                mask = None
+                obs_frame = gray_frame
             
-            last_frame = frame
+            last_frame = obs_frame
+            last_render_frame = gray_frame
             
             # 3. Check Death
-            lum = np.mean(frame)
+            lum = np.mean(gray_frame)
             last_lum = lum
             self.luminance_history.append(lum)
             
@@ -362,8 +372,8 @@ class BulletHellEnv(gym.Env):
                 frame_reward = 0.0 if lum < self.dead_thresh else 1.0
                 
                 # Add distance shaping if enabled
-                if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) and color_frame is not None:
-                    dist_reward = self._compute_distance_rewards(color_frame)
+                if use_mask and mask is not None:
+                    dist_reward = self._compute_distance_rewards(mask)
                     frame_reward += dist_reward
             
             total_reward += frame_reward
@@ -378,7 +388,7 @@ class BulletHellEnv(gym.Env):
         self.episode_reward += total_reward
         self.steps += 1
         
-        # Track last action for potential reward shaping
+        # Track last action for potential reward shaping and key reuse
         self.last_action = action
         
         # 5. Info
@@ -393,27 +403,21 @@ class BulletHellEnv(gym.Env):
         
         # 6. Render
         if self.render_mode == "human":
-            self._render_frame(last_frame, info)
+            self._render_frame(last_render_frame, info)
 
         return self._get_obs(), total_reward, terminated, False, info
     
-    def _compute_distance_rewards(self, color_frame):
+    def _compute_distance_rewards(self, mask):
         """
         Compute reward based on distance to nearest bullet and enemy.
-        Uses parallel mask generation to avoid blocking.
         
         Args:
-            color_frame: Full-resolution BGR frame
+            mask: 84x84 segmentation mask (BGR frame already downscaled)
         
         Returns:
             Total distance reward (float)
         """
         try:
-            # Compute mask on the current frame to align reward with transition
-            reward_h, reward_w = 84, 84
-            small_frame = cv2.resize(color_frame, (reward_w, reward_h), interpolation=cv2.INTER_LINEAR)
-            mask = self.mask_generator.generate_mask(small_frame)
-            
             # Extract positions
             ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
             
@@ -459,7 +463,8 @@ class BulletHellEnv(gym.Env):
             return 0.0
 
     def _render_frame(self, frame, info):
-        display = cv2.resize(frame, (400, 400), interpolation=cv2.INTER_NEAREST)
+        display_src = frame
+        display = cv2.resize(display_src, (400, 400), interpolation=cv2.INTER_NEAREST)
         cv2.putText(display, f"Rew: {info['episode_reward']:.1f}", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(display, f"Step: {info['step_reward']:.3f}", (10, 70), 
