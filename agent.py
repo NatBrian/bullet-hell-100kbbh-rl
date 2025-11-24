@@ -83,6 +83,35 @@ class ReplayBuffer:
     def __len__(self):
         return self.size
 
+    def serialize(self):
+        """Return a serializable snapshot of the buffer."""
+        return {
+            "states": self.states[:self.size].copy(),
+            "actions": self.actions[:self.size].copy(),
+            "rewards": self.rewards[:self.size].copy(),
+            "next_states": self.next_states[:self.size].copy(),
+            "dones": self.dones[:self.size].copy(),
+            "ptr": self.ptr,
+            "size": self.size,
+            "capacity": self.capacity,
+        }
+
+    def load_from(self, data):
+        """Restore buffer contents from a serialized snapshot."""
+        size = min(data.get("size", 0), self.capacity)
+        if size == 0:
+            self.ptr = 0
+            self.size = 0
+            return
+        self.states[:size] = data["states"][:size]
+        self.actions[:size] = data["actions"][:size]
+        self.rewards[:size] = data["rewards"][:size]
+        self.next_states[:size] = data["next_states"][:size]
+        self.dones[:size] = data["dones"][:size]
+        self.size = size
+        # ptr can be beyond size; wrap safely
+        self.ptr = data.get("ptr", size) % self.capacity
+
 class DQNAgent:
     def __init__(
         self,
@@ -164,3 +193,21 @@ class DQNAgent:
     def load(self, path):
         self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
         self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def get_full_state(self):
+        """Return full training state for checkpointing."""
+        return {
+            "policy_state": self.policy_net.state_dict(),
+            "target_state": self.target_net.state_dict(),
+            "optimizer_state": self.optimizer.state_dict(),
+            "replay": self.memory.serialize(),
+        }
+
+    def load_full_state(self, state_dict):
+        """Load full training state from checkpoint."""
+        self.policy_net.load_state_dict(state_dict["policy_state"])
+        self.target_net.load_state_dict(state_dict["target_state"])
+        self.optimizer.load_state_dict(state_dict["optimizer_state"])
+        replay = state_dict.get("replay", {})
+        if replay:
+            self.memory.load_from(replay)

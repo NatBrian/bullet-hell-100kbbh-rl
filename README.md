@@ -60,6 +60,9 @@ python train.py
 
 # With Visualization and Double DQN
 python train.py --render --double_dqn --total_episodes 1000
+
+# Continue Training from a Checkpoint (run 50 more episodes)
+python train.py --full-resume checkpoints/latest_full.pth --add-episodes 50
 ```
 
 **Common Arguments:**

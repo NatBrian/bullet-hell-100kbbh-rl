@@ -11,6 +11,37 @@ from env import BulletHellEnv
 from agent import DQNAgent
 
 def train(args):
+    def save_full_checkpoint(path, agent, epsilon, total_steps, episode):
+        ckpt = {
+            "agent": agent.get_full_state(),
+            "epsilon": epsilon,
+            "total_steps": total_steps,
+            "episode": episode,
+            "args": vars(args),
+        }
+        torch.save(ckpt, path)
+
+    def load_full_checkpoint(path, agent):
+        # Handle PyTorch >=2.6 weights_only default by explicitly allowing full pickled state
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:
+            ckpt = torch.load(path, map_location="cpu")
+        if "agent" in ckpt:
+            agent.load_full_state(ckpt["agent"])
+            epsilon = ckpt.get("epsilon", args.epsilon_start)
+            total_steps = ckpt.get("total_steps", 0)
+            start_episode = ckpt.get("episode", 0) + 1
+            print(f"Loaded full checkpoint from {path} (episode {start_episode})")
+        else:
+            # Fallback: treat as policy-only checkpoint
+            agent.load(path)
+            epsilon = args.epsilon_start
+            total_steps = 0
+            start_episode = 0
+            print(f"Loaded policy-only checkpoint from {path}; starting fresh epsilon/steps")
+        return epsilon, total_steps, start_episode
+
     # Setup paths
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
@@ -53,7 +84,15 @@ def train(args):
 
     # Load checkpoint if provided
     start_episode = 0
-    if args.resume:
+    epsilon = args.epsilon_start
+    total_steps = 0
+    if args.full_resume:
+        if os.path.exists(args.full_resume):
+            epsilon, total_steps, start_episode = load_full_checkpoint(args.full_resume, agent)
+            print(f"Resumed full checkpoint from {args.full_resume}")
+        else:
+            print(f"Full checkpoint {args.full_resume} not found, starting fresh.")
+    elif args.resume:
         if os.path.exists(args.resume):
             agent.load(args.resume)
             print(f"Resumed from {args.resume}")
@@ -61,12 +100,23 @@ def train(args):
             print(f"Checkpoint {args.resume} not found, starting fresh.")
 
     # Training Loop
-    epsilon = args.epsilon_start
-    total_steps = 0
+    if args.add_episodes is not None:
+        end_episode = start_episode + args.add_episodes
+        planned_episodes = args.add_episodes
+    else:
+        end_episode = args.total_episodes
+        planned_episodes = end_episode - start_episode
+
+    if planned_episodes <= 0:
+        print(f"No episodes to run (start_episode={start_episode}, target_end={end_episode}). "
+              f"Increase --total_episodes or pass --add-episodes to continue training.")
+        env.close()
+        writer.close()
+        return
     
-    pbar = tqdm(total=args.total_episodes)
+    pbar = tqdm(total=planned_episodes)
     
-    for episode in range(start_episode, args.total_episodes):
+    for episode in range(start_episode, end_episode):
         state, _ = env.reset()
         episode_reward = 0
         episode_loss = []
@@ -130,7 +180,12 @@ def train(args):
         if (episode + 1) % args.save_freq == 0:
             path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}.pth")
             agent.save(path)
-            agent.save(os.path.join(args.checkpoint_dir, "latest.pth"))
+            latest = os.path.join(args.checkpoint_dir, "latest.pth")
+            agent.save(latest)
+            full_path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}_full.pth")
+            latest_full = os.path.join(args.checkpoint_dir, "latest_full.pth")
+            save_full_checkpoint(full_path, agent, epsilon, total_steps, episode)
+            save_full_checkpoint(latest_full, agent, epsilon, total_steps, episode)
 
     env.close()
     writer.close()
@@ -158,6 +213,7 @@ if __name__ == "__main__":
     
     # Training params
     parser.add_argument("--total_episodes", type=int, default=1000)
+    parser.add_argument("--add-episodes", type=int, default=None, help="Train for this many episodes beyond the resume point (ignored when not resuming)")
     parser.add_argument("--learning_starts", type=int, default=1000)
     parser.add_argument("--train_freq", type=int, default=4, help="Train every N steps")
     parser.add_argument("--target_update_freq", type=int, default=1000)
@@ -168,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
+    parser.add_argument("--full-resume", type=str, default=None, help="Path to full checkpoint (policy+optimizer+replay) to resume")
     parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
     parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
     parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")

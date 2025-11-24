@@ -113,12 +113,35 @@ class BulletHellEnv(gym.Env):
         """Initialize dxcam or mss."""
         self.use_dxcam = False
         if DXCAM_AVAILABLE:
-            try:
-                self.camera = dxcam.create(output_color="BGR")
-                self.use_dxcam = True
-                print("Using dxcam for screen capture.")
-            except Exception as e:
-                print(f"dxcam initialization failed: {e}. Falling back to mss.")
+            # Try multiple dxcam initialization strategies for RTX GPUs
+            init_attempts = [
+                {"device_idx": 0, "output_idx": 0, "output_color": "BGR"},  # Primary GPU, primary monitor
+                {"device_idx": 0, "output_color": "BGR"},  # Primary GPU, auto-detect monitor
+                {"output_color": "BGR"},  # Auto-detect everything
+            ]
+            
+            for idx, kwargs in enumerate(init_attempts):
+                try:
+                    camera = dxcam.create(**kwargs)
+                    if camera is not None:
+                        self.camera = camera
+                        self.use_dxcam = True
+                        print(f"Using dxcam for screen capture (attempt {idx+1} succeeded).")
+                        break
+                    else:
+                        print(f"dxcam.create() attempt {idx+1} returned None.")
+                except Exception as e:
+                    print(f"dxcam initialization attempt {idx+1} failed: {e}")
+                    # Clean up partially initialized camera object if it exists
+                    if hasattr(self, 'camera') and self.camera is not None:
+                        try:
+                            del self.camera
+                        except:
+                            pass
+                    self.camera = None
+            
+            if not self.use_dxcam:
+                print("All dxcam initialization attempts failed. Falling back to mss.")
         
         if not self.use_dxcam:
             self.mss_sct = mss.mss()
