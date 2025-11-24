@@ -1,0 +1,12 @@
+numpy
+torch
+gymnasium
+opencv-python
+tqdm
+tensorboard
+pandas
+matplotlib
+dxcam
+mss
+pywin32
+pydirectinput
