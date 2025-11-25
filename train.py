@@ -100,7 +100,8 @@ def train(args):
         enemy_quadratic_coef=args.enemy_quadratic_coef,
         alive_reward=args.alive_reward,
         death_penalty=args.death_penalty,
-        risk_clip=args.risk_clip
+        risk_clip=args.risk_clip,
+        force_mss=args.force_mss
     )
 
     # Agent
@@ -310,5 +311,8 @@ if __name__ == "__main__":
     parser.add_argument("--enemy-reward-coef", type=float, default=0.02, help="Coefficient for enemy distance reward")
     parser.add_argument("--enemy-quadratic-coef", type=float, default=0.1, help="Quadratic coefficient for enemy distance reward")
     
+    # Debugging
+    parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
+
     args = parser.parse_args()
     train(args)

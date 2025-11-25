@@ -48,6 +48,7 @@ class BulletHellEnv(gym.Env):
         alive_reward=4.0,  # Reward per frame survived (when bright)
         death_penalty=-20.0,  # Penalty on death
         risk_clip=10.0,  # Clip for distance-based risk
+        force_mss=False, # Force usage of MSS for screen capture
     ):
         super().__init__()
         self.window_title = window_title
@@ -71,6 +72,7 @@ class BulletHellEnv(gym.Env):
         self.alive_reward = alive_reward
         self.death_penalty = death_penalty
         self.risk_clip = risk_clip
+        self.force_mss = force_mss
         self.last_bullet_dist = None
         self.last_enemy_dist = None
         
@@ -121,7 +123,8 @@ class BulletHellEnv(gym.Env):
     def _init_capture(self):
         """Initialize dxcam or mss."""
         self.use_dxcam = False
-        if DXCAM_AVAILABLE:
+        
+        if DXCAM_AVAILABLE and not self.force_mss:
             # Try multiple dxcam initialization strategies for RTX GPUs
             init_attempts = [
                 {"device_idx": 0, "output_idx": 0, "output_color": "BGR"},  # Primary GPU, primary monitor
@@ -143,14 +146,13 @@ class BulletHellEnv(gym.Env):
                     print(f"dxcam initialization attempt {idx+1} failed: {e}")
                     # Clean up partially initialized camera object if it exists
                     if hasattr(self, 'camera') and self.camera is not None:
-                        try:
-                            del self.camera
-                        except:
-                            pass
-                    self.camera = None
+                        # Just set to None, let GC handle it (suppressing errors in __del__ is hard)
+                        self.camera = None
             
             if not self.use_dxcam:
                 print("All dxcam initialization attempts failed. Falling back to mss.")
+        elif self.force_mss:
+            print("Forcing mss for screen capture (dxcam disabled by config).")
         
         if not self.use_dxcam:
             self.mss_sct = mss.mss()
@@ -265,6 +267,8 @@ class BulletHellEnv(gym.Env):
                     monitor = {"top": top, "left": left, "width": width, "height": height}
                     img = self.mss_sct.grab(monitor)
                     frame = np.array(img)
+                    if frame.size == 0:
+                        raise RuntimeError("Captured empty frame from MSS")
                     frame = frame[:, :, :3] # BGRA -> BGR
                 
                 # Save screenshot if enabled and interval passed

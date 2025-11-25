@@ -49,7 +49,7 @@ def pick_resume_path(checkpoint_dir: Path) -> Path | None:
     return None
 
 
-def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool):
+def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool, force_mss: bool):
     for i in range(batches):
         # Clean up old checkpoints to save disk space (keep only latest.pth and latest_full.pth)
         if keep_latest_only:
@@ -68,6 +68,8 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
             cmd.append("--render")
         if keep_latest_only:
             cmd.append("--keep-latest-only")
+        if force_mss:
+            cmd.append("--force-mss")
 
         # If we have a full checkpoint, prefer it; otherwise fall back to policy-only.
         if resume_path:
@@ -94,6 +96,7 @@ if __name__ == "__main__":
     parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN")
     parser.add_argument("--render", action="store_true", help="Render agent view")
     parser.add_argument("--keep-latest-only", action=argparse.BooleanOptionalAction, default=True, help="Only save latest checkpoints to save disk space (default: True). Use --no-keep-latest-only to disable.")
+    parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
@@ -110,4 +113,5 @@ if __name__ == "__main__":
         use_double_dqn=args.double_dqn,
         render=args.render,
         keep_latest_only=args.keep_latest_only,
+        force_mss=args.force_mss,
     )
