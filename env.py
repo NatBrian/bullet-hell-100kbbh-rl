@@ -362,6 +362,8 @@ class BulletHellEnv(gym.Env):
         4. Terminate as soon as death is detected
         """
         total_reward = 0.0
+        step_bullet_reward = 0.0
+        step_enemy_reward = 0.0
         terminated = False
         last_frame = None  # what goes into the stack
         last_render_frame = None  # what we show in render mode (original grayscale)
@@ -419,8 +421,10 @@ class BulletHellEnv(gym.Env):
                 
                 # Add distance shaping if enabled
                 if use_mask and mask is not None:
-                    dist_reward = self._compute_distance_rewards(mask)
+                    dist_reward, b_rew, e_rew = self._compute_distance_rewards(mask)
                     frame_reward += dist_reward
+                    step_bullet_reward += b_rew
+                    step_enemy_reward += e_rew
             
             total_reward += frame_reward
             
@@ -444,7 +448,9 @@ class BulletHellEnv(gym.Env):
             "step_reward": total_reward,
             "bullet_distance_enabled": self.use_bullet_distance_reward,
             "enemy_distance_enabled": self.use_enemy_distance_reward,
-            "frames_executed": frame_idx + 1  # How many frames were actually executed
+            "frames_executed": frame_idx + 1,  # How many frames were actually executed
+            "bullet_distance_reward": step_bullet_reward,
+            "enemy_distance_reward": step_enemy_reward,
         }
         
         # 6. Render
@@ -461,7 +467,7 @@ class BulletHellEnv(gym.Env):
             mask: 84x84 segmentation mask (BGR frame already downscaled)
         
         Returns:
-            Total distance reward (float)
+            tuple: (total_reward, bullet_reward_part, enemy_reward_part)
         """
         try:
             # Extract positions
@@ -473,12 +479,13 @@ class BulletHellEnv(gym.Env):
             elif self.last_ship_pos is not None:
                 # Ship detection failed, use last known position with penalty
                 ship_pos = self.last_ship_pos
-                return -0.5
+                return -0.5, 0.0, 0.0
             else:
                 # Can't find ship at all - heavily penalize
-                return -1.0
+                return -1.0, 0.0, 0.0
             
-            total_reward = 0.0
+            bullet_part = 0.0
+            enemy_part = 0.0
             frame_diagonal = np.sqrt(84**2 + 84**2)
 
             # Bullet Reward (quadratic distance shaping)
@@ -499,8 +506,8 @@ class BulletHellEnv(gym.Env):
                             closing_pen = min(delta * self.risk_clip, self.risk_clip)
                         elif delta < 0:
                             escape_bonus = min(-delta * self.risk_clip, self.risk_clip)
-                    total_reward -= self.bullet_reward_coef * (risk + closing_pen)
-                    total_reward += self.bullet_reward_coef * escape_bonus
+                    bullet_part -= self.bullet_reward_coef * (risk + closing_pen)
+                    bullet_part += self.bullet_reward_coef * escape_bonus
                     self.last_bullet_dist = dist
                 else:
                     self.last_bullet_dist = None
@@ -513,7 +520,7 @@ class BulletHellEnv(gym.Env):
                     # Clip density risk to prevent explosion when inside a bullet (though game over usually happens first)
                     # We allow a higher clip for density since it sums multiple bullets
                     density_risk = min(density_risk, self.risk_clip * 5.0) 
-                    total_reward -= self.bullet_density_coef * density_risk
+                    bullet_part -= self.bullet_density_coef * density_risk
 
             # Enemy Reward (quadratic distance shaping)
             if self.use_enemy_distance_reward:
@@ -532,18 +539,19 @@ class BulletHellEnv(gym.Env):
                             closing_pen = min(delta * self.risk_clip, self.risk_clip)
                         elif delta < 0:
                             escape_bonus = min(-delta * self.risk_clip, self.risk_clip)
-                    total_reward -= self.enemy_reward_coef * (risk + closing_pen)
-                    total_reward += self.enemy_reward_coef * escape_bonus
+                    enemy_part -= self.enemy_reward_coef * (risk + closing_pen)
+                    enemy_part += self.enemy_reward_coef * escape_bonus
                     self.last_enemy_dist = dist
                 else:
                     self.last_enemy_dist = None
 
-            return total_reward
+            total_reward = bullet_part + enemy_part
+            return total_reward, bullet_part, enemy_part
         
         except Exception as e:
             # If mask generation fails, return neutral reward
             print(f"Reward computation failed: {e}")
-            return 0.0
+            return 0.0, 0.0, 0.0
 
     def _render_frame(self, frame, info):
         display_src = frame
@@ -552,13 +560,17 @@ class BulletHellEnv(gym.Env):
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.putText(display, f"Step: {info['step_reward']:.3f}", (10, 70), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(display, f"Lum: {info['luminance']:.1f}", (10, 110), 
+        cv2.putText(display, f"B_Rew: {info['bullet_distance_reward']:.3f}", (10, 110), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.putText(display, f"E_Rew: {info['enemy_distance_reward']:.3f}", (10, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 1)
+        cv2.putText(display, f"Lum: {info['luminance']:.1f}", (10, 190), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         # Show bullet distance status
         bd_status = "ON" if info['bullet_distance_enabled'] else "OFF"
         ed_status = "ON" if info['enemy_distance_enabled'] else "OFF"
-        cv2.putText(display, f"BD: {bd_status} | ED: {ed_status}", (10, 150), 
+        cv2.putText(display, f"BD: {bd_status} | ED: {ed_status}", (10, 230), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
         
         window_name = "Agent View"
