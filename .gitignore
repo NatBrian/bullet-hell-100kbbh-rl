@@ -186,3 +186,4 @@ logs/
 .conda/
 game_screenshots/
 game_screenshots_mask/
+backup_checkpoints/
