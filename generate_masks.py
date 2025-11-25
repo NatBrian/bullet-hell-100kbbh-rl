@@ -149,6 +149,13 @@ class BulletMaskGenerator:
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         _, bright_mask = cv2.threshold(gray, ENEMY_BRIGHT_THRESHOLD, 255, cv2.THRESH_BINARY)
         
+        # Mask out HUD (Bottom Left) to prevent false positives
+        h, w = bright_mask.shape
+        # Exclude bottom 8% and left 40%
+        hud_h = int(h * 0.08)
+        hud_w = int(w * 0.40)
+        bright_mask[h-hud_h:, :hud_w] = 0
+        
         # B. Find contours with hierarchy
         # RETR_CCOMP retrieves 2-level hierarchy (external and holes)
         # hierarchy format: [Next, Previous, First_Child, Parent]
