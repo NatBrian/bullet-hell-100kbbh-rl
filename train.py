@@ -96,6 +96,7 @@ def train(args):
         use_enemy_distance_reward=not args.no_enemy_distance_reward,
         enemy_reward_coef=args.enemy_reward_coef,
         bullet_quadratic_coef=args.bullet_quadratic_coef,
+        bullet_density_coef=args.bullet_density_coef,
         enemy_quadratic_coef=args.enemy_quadratic_coef,
         alive_reward=args.alive_reward,
         death_penalty=args.death_penalty,
@@ -302,6 +303,7 @@ if __name__ == "__main__":
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
     parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
     parser.add_argument("--bullet-quadratic-coef", type=float, default=0.1, help="Quadratic coefficient for bullet distance reward")
+    parser.add_argument("--bullet-density-coef", type=float, default=0.01, help="Coefficient for cumulative bullet risk (density)")
     
     # Enemy distance reward params (enabled by default)
     parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")

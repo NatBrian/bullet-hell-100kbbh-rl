@@ -43,6 +43,7 @@ class BulletHellEnv(gym.Env):
         use_enemy_distance_reward=False, # Enable enemy distance reward shaping
         enemy_reward_coef=0.02, # Coefficient for enemy distance reward
         bullet_quadratic_coef=0.10, # Quadratic coefficient for bullet distance
+        bullet_density_coef=0.01, # Coefficient for cumulative bullet risk (density)
         enemy_quadratic_coef=0.10, # Quadratic coefficient for enemy distance
         alive_reward=4.0,  # Reward per frame survived (when bright)
         death_penalty=-20.0,  # Penalty on death
@@ -65,6 +66,7 @@ class BulletHellEnv(gym.Env):
         self.use_enemy_distance_reward = use_enemy_distance_reward
         self.enemy_reward_coef = enemy_reward_coef
         self.bullet_quadratic_coef = bullet_quadratic_coef
+        self.bullet_density_coef = bullet_density_coef
         self.enemy_quadratic_coef = enemy_quadratic_coef
         self.alive_reward = alive_reward
         self.death_penalty = death_penalty
@@ -477,6 +479,7 @@ class BulletHellEnv(gym.Env):
 
             # Bullet Reward (quadratic distance shaping)
             if self.use_bullet_distance_reward:
+                # 1. Nearest Bullet (Immediate Threat)
                 dist = self.mask_generator.compute_nearest_bullet_distance(
                     ship_pos, bullet_positions, normalize_by=frame_diagonal
                 )
@@ -497,6 +500,16 @@ class BulletHellEnv(gym.Env):
                     self.last_bullet_dist = dist
                 else:
                     self.last_bullet_dist = None
+
+                # 2. Bullet Density (Cumulative Risk)
+                if self.bullet_density_coef > 0:
+                    density_risk = self.mask_generator.compute_cumulative_risk(
+                        ship_pos, bullet_positions, normalize_by=frame_diagonal
+                    )
+                    # Clip density risk to prevent explosion when inside a bullet (though game over usually happens first)
+                    # We allow a higher clip for density since it sums multiple bullets
+                    density_risk = min(density_risk, self.risk_clip * 5.0) 
+                    total_reward -= self.bullet_density_coef * density_risk
 
             # Enemy Reward (quadratic distance shaping)
             if self.use_enemy_distance_reward:
