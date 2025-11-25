@@ -121,12 +121,14 @@ python train.py --save-screenshots 1000
 *   `--double_dqn`: Enable Double DQN algorithm.
 *   `--render`: Show the agent's view window.
 *   `--no-bullet-distance-reward`: Disable bullet distance reward shaping.
-*   `--bullet-reward-coef`: Coefficient for bullet distance reward (default: 0.01).
+*   `--bullet-reward-coef`: Linear coefficient for bullet distance reward (default: 0.01).
+*   `--bullet-quadratic-coef`: Quadratic coefficient for bullet distance reward (default: 0.1).
 *   `--no-enemy-distance-reward`: Disable enemy distance reward shaping.
-*   `--enemy-reward-coef`: Coefficient for enemy distance reward (default: 0.01).
+*   `--enemy-reward-coef`: Linear coefficient for enemy distance reward (default: 0.02).
+*   `--enemy-quadratic-coef`: Quadratic coefficient for enemy distance reward (default: 0.1).
 *   `--alive-reward`: Reward per frame survived (default: 4.0).
 *   `--death-penalty`: Penalty on death (default: -20.0).
-*   `--risk-clip`: Clip value for distance-based risk (default: 3.0).
+*   `--risk-clip`: Clip value for distance-based risk (default: 10.0).
 *   `--save-screenshots`: Save screenshots every X ms (0 to disable).
 *   `--frame_skip`: Number of frames to repeat each action (default: 1).
 *   `--game_path`: Path to game executable (default: `assets/100KBBH-1.0.3.exe`).
@@ -167,7 +169,7 @@ The AI operates in a continuous loop:
     *   **Base Survival**: +4.0 per frame survived (when luminance > dead_thresh).
     *   **Death Penalty**: -20.0 when death detected (luminance below threshold for 3 consecutive frames).
     *   **Bullet Distance** (optional, enabled by default):
-        *   **Risk**: Penalty inversely proportional to distance: `-coef * (1 / distance)`, clamped by `risk_clip`.
+        *   **Risk**: Penalty based on distance: `-(linear_coef * (1/dist) + quadratic_coef * (1/dist^2))`, clamped by `risk_clip`.
         *   **Closing Penalty**: Extra penalty if moving closer to bullets.
         *   **Escape Bonus**: Bonus if moving away from bullets.
     *   **Enemy Distance** (optional, enabled by default): Same structure as bullet distance.

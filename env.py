@@ -41,10 +41,12 @@ class BulletHellEnv(gym.Env):
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
         use_enemy_distance_reward=False, # Enable enemy distance reward shaping
-        enemy_reward_coef=0.01, # Coefficient for enemy distance reward
+        enemy_reward_coef=0.02, # Coefficient for enemy distance reward
+        bullet_quadratic_coef=0.10, # Quadratic coefficient for bullet distance
+        enemy_quadratic_coef=0.10, # Quadratic coefficient for enemy distance
         alive_reward=4.0,  # Reward per frame survived (when bright)
         death_penalty=-20.0,  # Penalty on death
-        risk_clip=3.0,  # Clip for distance-based risk
+        risk_clip=10.0,  # Clip for distance-based risk
     ):
         super().__init__()
         self.window_title = window_title
@@ -62,6 +64,8 @@ class BulletHellEnv(gym.Env):
         self.bullet_reward_coef = bullet_reward_coef
         self.use_enemy_distance_reward = use_enemy_distance_reward
         self.enemy_reward_coef = enemy_reward_coef
+        self.bullet_quadratic_coef = bullet_quadratic_coef
+        self.enemy_quadratic_coef = enemy_quadratic_coef
         self.alive_reward = alive_reward
         self.death_penalty = death_penalty
         self.risk_clip = risk_clip
@@ -445,7 +449,7 @@ class BulletHellEnv(gym.Env):
     
     def _compute_distance_rewards(self, mask):
         """
-        Compute reward based on distance to nearest bullet and enemy.
+        Compute reward based on distance to nearest bullet and enemy using quadratic shaping.
         
         Args:
             mask: 84x84 segmentation mask (BGR frame already downscaled)
@@ -471,13 +475,14 @@ class BulletHellEnv(gym.Env):
             total_reward = 0.0
             frame_diagonal = np.sqrt(84**2 + 84**2)
 
-            # Bullet Reward (nearest-distance potential + closing/escaping speed)
+            # Bullet Reward (quadratic distance shaping)
             if self.use_bullet_distance_reward:
                 dist = self.mask_generator.compute_nearest_bullet_distance(
                     ship_pos, bullet_positions, normalize_by=frame_diagonal
                 )
                 if dist is not None:
-                    risk = 1.0 / (dist + 1e-6)
+                    # Quadratic shaping
+                    risk = 1.0 / (dist + 1e-6) + self.bullet_quadratic_coef / (dist**2 + 1e-6)
                     risk = min(risk, self.risk_clip)
                     closing_pen = 0.0
                     escape_bonus = 0.0
@@ -493,13 +498,14 @@ class BulletHellEnv(gym.Env):
                 else:
                     self.last_bullet_dist = None
 
-            # Enemy Reward (nearest-distance potential + closing/escaping speed)
+            # Enemy Reward (quadratic distance shaping)
             if self.use_enemy_distance_reward:
                 dist = self.mask_generator.compute_nearest_enemy_distance(
                     ship_pos, enemy_positions, normalize_by=frame_diagonal
                 )
                 if dist is not None:
-                    risk = 1.0 / (dist + 1e-6)
+                    # Quadratic shaping
+                    risk = 1.0 / (dist + 1e-6) + self.enemy_quadratic_coef / (dist**2 + 1e-6)
                     risk = min(risk, self.risk_clip)
                     closing_pen = 0.0
                     escape_bonus = 0.0
