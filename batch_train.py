@@ -4,6 +4,40 @@ import sys
 from pathlib import Path
 
 
+def cleanup_old_checkpoints(checkpoint_dir: Path):
+    """Delete old numbered checkpoints, keeping only latest.pth and latest_full.pth."""
+    if not checkpoint_dir.exists():
+        return
+    
+    deleted_count = 0
+    deleted_size = 0
+    
+    for ckpt_file in checkpoint_dir.glob("checkpoint_*.pth*"):
+        # Skip .tmp files (they'll be cleaned up separately)
+        if ckpt_file.suffix == ".tmp":
+            continue
+        
+        try:
+            size = ckpt_file.stat().st_size
+            ckpt_file.unlink()
+            deleted_count += 1
+            deleted_size += size
+        except Exception as e:
+            print(f"[Warning] Failed to delete {ckpt_file.name}: {e}")
+    
+    # Also clean up any leftover .tmp files from failed saves
+    for tmp_file in checkpoint_dir.glob("*.tmp"):
+        try:
+            tmp_file.unlink()
+            deleted_count += 1
+        except Exception as e:
+            print(f"[Warning] Failed to delete {tmp_file.name}: {e}")
+    
+    if deleted_count > 0:
+        size_mb = deleted_size / (1024 * 1024)
+        print(f"[Cleanup] Cleaned up {deleted_count} old checkpoint(s), freed {size_mb:.1f} MB")
+
+
 def pick_resume_path(checkpoint_dir: Path) -> Path | None:
     """Prefer full checkpoint, otherwise policy-only; return None if nothing exists."""
     full = checkpoint_dir / "latest_full.pth"
@@ -15,8 +49,12 @@ def pick_resume_path(checkpoint_dir: Path) -> Path | None:
     return None
 
 
-def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool):
+def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool):
     for i in range(batches):
+        # Clean up old checkpoints to save disk space (keep only latest.pth and latest_full.pth)
+        if keep_latest_only:
+            cleanup_old_checkpoints(checkpoint_dir)
+        
         resume_path = pick_resume_path(checkpoint_dir)
         cmd = [
             sys.executable,
@@ -28,6 +66,8 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
             cmd.append("--double_dqn")
         if render:
             cmd.append("--render")
+        if keep_latest_only:
+            cmd.append("--keep-latest-only")
 
         # If we have a full checkpoint, prefer it; otherwise fall back to policy-only.
         if resume_path:
@@ -53,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"), help="Checkpoint directory")
     parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN")
     parser.add_argument("--render", action="store_true", help="Render agent view")
+    parser.add_argument("--keep-latest-only", action=argparse.BooleanOptionalAction, default=True, help="Only save latest checkpoints to save disk space (default: True). Use --no-keep-latest-only to disable.")
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
@@ -68,4 +109,5 @@ if __name__ == "__main__":
         extra_args=args.extra_args,
         use_double_dqn=args.double_dqn,
         render=args.render,
+        keep_latest_only=args.keep_latest_only,
     )

@@ -10,37 +10,66 @@ from tqdm import tqdm
 from env import BulletHellEnv
 from agent import DQNAgent
 
-def train(args):
-    def save_full_checkpoint(path, agent, epsilon, total_steps, episode):
-        ckpt = {
-            "agent": agent.get_full_state(),
-            "epsilon": epsilon,
-            "total_steps": total_steps,
-            "episode": episode,
-            "args": vars(args),
-        }
-        torch.save(ckpt, path)
+def save_full_checkpoint(path, agent, epsilon, total_steps, episode, args):
+    """Save checkpoint with atomic write and error handling."""
+    import shutil
+    
+    # Check available disk space (require at least 500MB free)
+    try:
+        stat = shutil.disk_usage(os.path.dirname(path) or '.')
+        free_gb = stat.free / (1024**3)
+        if stat.free < 500 * 1024 * 1024:  # 500MB minimum
+            raise RuntimeError(f"Insufficient disk space: {free_gb:.2f}GB free. Need at least 0.5GB.")
+    except FileNotFoundError:
+        # Directory might not exist yet, which is fine for the check if we check parent
+        pass
+    
+    ckpt = {
+        "agent": agent.get_full_state(),
+        "epsilon": epsilon,
+        "total_steps": total_steps,
+        "episode": episode,
+        "args": vars(args),
+    }
+    
+    # Use atomic write: save to temp file, then rename
+    temp_path = path + ".tmp"
+    try:
+        torch.save(ckpt, temp_path)
+        # Atomic rename (os.replace is atomic on POSIX and Windows Python 3.3+)
+        os.replace(temp_path, path)
+    except Exception as e:
+        # Clean up temp file on failure
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        raise RuntimeError(f"Failed to save checkpoint to {path}: {e}") from e
 
-    def load_full_checkpoint(path, agent):
-        # Handle PyTorch >=2.6 weights_only default by explicitly allowing full pickled state
-        try:
-            ckpt = torch.load(path, map_location="cpu", weights_only=False)
-        except TypeError:
-            ckpt = torch.load(path, map_location="cpu")
-        if "agent" in ckpt:
-            agent.load_full_state(ckpt["agent"])
-            epsilon = ckpt.get("epsilon", args.epsilon_start)
-            total_steps = ckpt.get("total_steps", 0)
-            start_episode = ckpt.get("episode", 0) + 1
-            print(f"Loaded full checkpoint from {path} (episode {start_episode})")
-        else:
-            # Fallback: treat as policy-only checkpoint
-            agent.load(path)
-            epsilon = args.epsilon_start
-            total_steps = 0
-            start_episode = 0
-            print(f"Loaded policy-only checkpoint from {path}; starting fresh epsilon/steps")
-        return epsilon, total_steps, start_episode
+def load_full_checkpoint(path, agent, epsilon_start):
+    # Handle PyTorch >=2.6 weights_only default by explicitly allowing full pickled state
+    try:
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location="cpu")
+    
+    if "agent" in ckpt:
+        agent.load_full_state(ckpt["agent"])
+        epsilon = ckpt.get("epsilon", epsilon_start)
+        total_steps = ckpt.get("total_steps", 0)
+        start_episode = ckpt.get("episode", 0) + 1
+        print(f"Loaded full checkpoint from {path} (episode {start_episode})")
+    else:
+        # Fallback: treat as policy-only checkpoint
+        agent.load(path)
+        epsilon = epsilon_start
+        total_steps = 0
+        start_episode = 0
+        print(f"Loaded policy-only checkpoint from {path}; starting fresh epsilon/steps")
+    return epsilon, total_steps, start_episode
+
+def train(args):
 
     # Setup paths
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -88,7 +117,7 @@ def train(args):
     total_steps = 0
     if args.full_resume:
         if os.path.exists(args.full_resume):
-            epsilon, total_steps, start_episode = load_full_checkpoint(args.full_resume, agent)
+            epsilon, total_steps, start_episode = load_full_checkpoint(args.full_resume, agent, args.epsilon_start)
             print(f"Resumed full checkpoint from {args.full_resume}")
         else:
             print(f"Full checkpoint {args.full_resume} not found, starting fresh.")
@@ -178,14 +207,50 @@ def train(args):
         
         # Checkpointing
         if (episode + 1) % args.save_freq == 0:
-            path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}.pth")
-            agent.save(path)
-            latest = os.path.join(args.checkpoint_dir, "latest.pth")
-            agent.save(latest)
-            full_path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}_full.pth")
-            latest_full = os.path.join(args.checkpoint_dir, "latest_full.pth")
-            save_full_checkpoint(full_path, agent, epsilon, total_steps, episode)
-            save_full_checkpoint(latest_full, agent, epsilon, total_steps, episode)
+            try:
+                # Determine checkpoint paths
+                if not args.keep_latest_only:
+                    # Save numbered checkpoints (old behavior)
+                    path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}.pth")
+                    full_path = os.path.join(args.checkpoint_dir, f"checkpoint_{episode+1}_full.pth")
+                else:
+                    # Skip numbered checkpoints (space-saving mode)
+                    path = None
+                    full_path = None
+                
+                # Always save latest checkpoints
+                latest = os.path.join(args.checkpoint_dir, "latest.pth")
+                latest_full = os.path.join(args.checkpoint_dir, "latest_full.pth")
+                
+                # Save policy-only checkpoints
+                if path:
+                    agent.save(path)
+                agent.save(latest)
+                
+                # Save full checkpoints
+                if full_path:
+                    save_full_checkpoint(full_path, agent, epsilon, total_steps, episode, args)
+                save_full_checkpoint(latest_full, agent, epsilon, total_steps, episode, args)
+                
+                # Clean up old numbered checkpoints if in keep_latest_only mode
+                if args.keep_latest_only:
+                    from pathlib import Path
+                    checkpoint_path = Path(args.checkpoint_dir)
+                    deleted_count = 0
+                    for old_ckpt in checkpoint_path.glob("checkpoint_*.pth*"):
+                        if old_ckpt.suffix != ".tmp":
+                            try:
+                                old_ckpt.unlink()
+                                deleted_count += 1
+                            except:
+                                pass
+                    if deleted_count > 0:
+                        print(f"\nCleaned up {deleted_count} old checkpoint(s)")
+                
+                print(f"\n[Saved] Saved checkpoints at episode {episode+1}")
+            except Exception as e:
+                print(f"\n[Warning] Failed to save checkpoint at episode {episode+1}: {e}")
+                print("Training will continue, but checkpoint was not saved.")
 
     env.close()
     writer.close()
@@ -225,6 +290,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
     parser.add_argument("--full-resume", type=str, default=None, help="Path to full checkpoint (policy+optimizer+replay) to resume")
+    parser.add_argument("--keep-latest-only", action="store_true", help="Only save latest.pth and latest_full.pth (saves disk space)")
     parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
     parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
     parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")

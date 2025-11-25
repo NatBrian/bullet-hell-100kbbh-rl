@@ -188,7 +188,20 @@ class DQNAgent:
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
     def save(self, path):
-        torch.save(self.policy_net.state_dict(), path)
+        """Save policy network with atomic write."""
+        temp_path = path + ".tmp"
+        try:
+            torch.save(self.policy_net.state_dict(), temp_path)
+            # Atomic rename (os.replace is atomic on POSIX and Windows Python 3.3+)
+            os.replace(temp_path, path)
+        except Exception as e:
+            # Clean up temp file on failure
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            raise RuntimeError(f"Failed to save policy to {path}: {e}") from e
 
     def load(self, path):
         self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
