@@ -98,6 +98,7 @@ class BulletHellEnv(gym.Env):
         self.force_mss = force_mss
         self.bg_threshold = bg_threshold
         self.last_bullet_dist = None
+        self.last_bullet_risk = None
         self.last_enemy_dist = None
         self.dodge_skill_threshold = dodge_skill_threshold
         self.dodge_skill_multiplier = dodge_skill_multiplier
@@ -350,6 +351,7 @@ class BulletHellEnv(gym.Env):
         self.episode_reward = 0.0
         self.luminance_history.clear()
         self.last_bullet_dist = None
+        self.last_bullet_risk = None
         self.last_enemy_dist = None
         
         # 1. Focus window
@@ -752,46 +754,60 @@ class BulletHellEnv(gym.Env):
 
             # --- 1. Bullet Risk Analysis ---
             if self.use_bullet_distance_reward:
-                dist = self.mask_generator.compute_nearest_bullet_distance(
+                # Calculate Cumulative Risk (Sum of 1/dist for ALL bullets)
+                # This is much smoother than "nearest bullet" tracking
+                current_bullet_risk = self.mask_generator.compute_cumulative_risk(
                     ship_pos, bullet_positions, normalize_by=frame_diagonal
                 )
                 
-                if dist is not None:
-                    # Calculate Risk (Inverse Distance)
-                    # We use the coefficients to tune how "wide" the danger zone is
-                    # Higher coef = wider danger zone
-                    raw_risk = 1.0 / (dist + 1e-6) + self.bullet_quadratic_coef / (dist**2 + 1e-6)
+                # Also get nearest distance for max risk clipping
+                nearest_dist = self.mask_generator.compute_nearest_bullet_distance(
+                    ship_pos, bullet_positions, normalize_by=frame_diagonal
+                )
+                
+                if nearest_dist is not None:
+                    # Base Risk for Safety Factor (dominated by nearest bullet)
+                    # We still use the quadratic formula for the "Safety Factor" itself
+                    # to ensure it drops sharply when VERY close.
+                    raw_risk = 1.0 / (nearest_dist + 1e-6) + self.bullet_quadratic_coef / (nearest_dist**2 + 1e-6)
                     bullet_risk = min(raw_risk, self.risk_clip)
                     
-                    # Escape Bonus: Only reward moving AWAY
-                    if self.last_bullet_dist is not None:
-                        delta = self.last_bullet_dist - dist # Positive if getting closer (bad), Negative if moving away (good)
-                        if delta < 0: # Moving away
-                            # Scale bonus by how close we are (moving away when close is more valuable)
-                            urgency = bullet_risk / self.risk_clip
-                            bullet_escape_bonus = min(-delta * self.risk_clip * urgency * 5.0, 1.0) 
-                    
-                    self.last_bullet_dist = dist
-                    
-                    # Bullet Density Awareness - Dodge Skill Bonus
-                    # Reward agent for surviving in areas with MULTIPLE bullets (skillful dodging)
-                    if len(bullet_positions) > 1:  # Only if multiple bullets present
-                        cumulative_risk = self.mask_generator.compute_cumulative_risk(
-                            ship_pos, bullet_positions, normalize_by=frame_diagonal
-                        )
+                    # Escape Bonus: Based on CUMULATIVE risk delta
+                    # This handles "threading the needle" better. If you move closer to one but 
+                    # further from 5 others, your cumulative risk might drop (good).
+                    if self.last_bullet_risk is not None:
+                        # Positive delta = Risk increased (Bad)
+                        # Negative delta = Risk decreased (Good)
+                        risk_delta = current_bullet_risk - self.last_bullet_risk
                         
-                        # If cumulative risk is high AND agent is moving, reward dodging skill
-                        if cumulative_risk > self.dodge_skill_threshold:
-                            # Only award if agent is actively evading (has escape bonus)
-                            # This prevents rewarding agent for being "stuck" in danger
-                            if bullet_escape_bonus > 0:
-                                # Bonus scales with how many bullets agent is near while dodging
-                                dodge_skill_bonus = min(
-                                    (cumulative_risk - self.dodge_skill_threshold) * self.dodge_skill_multiplier,
-                                    2.0  # Cap at +2.0 to prevent exploitation
-                                )
+                        if risk_delta < 0: # Risk Decreasing (Moving to safety)
+                            # Scale bonus by how dangerous the situation is.
+                            # Escaping high risk is worth more than escaping low risk.
+                            urgency = min(current_bullet_risk, self.risk_clip) / self.risk_clip
+                            # Multiplier 50.0 (increased from 5.0) to compensate for smaller magnitude
+                            # of risk delta (1/dist) compared to raw distance delta.
+                            bullet_escape_bonus = min(-risk_delta * urgency * 50.0, 1.0)
+                    
+                    self.last_bullet_risk = current_bullet_risk
+                    self.last_bullet_dist = nearest_dist # Keep tracking for debug/legacy
+                    
+                    # Dodge Skill Bonus (Threading the Needle)
+                    # Reward surviving in high density areas
+                    if len(bullet_positions) > 1:
+                        # If cumulative risk is high (dense)
+                        if current_bullet_risk > self.dodge_skill_threshold:
+                            # And we are NOT making it significantly worse (delta <= small epsilon)
+                            # We don't strictly require improvement, just stability in chaos.
+                            if self.last_bullet_risk is not None:
+                                delta = current_bullet_risk - self.last_bullet_risk
+                                if delta <= 0.1: # Allow slight fluctuations
+                                    dodge_skill_bonus = min(
+                                        (current_bullet_risk - self.dodge_skill_threshold) * self.dodge_skill_multiplier,
+                                        2.0
+                                    )
                 else:
                     self.last_bullet_dist = None
+                    self.last_bullet_risk = 0.0
 
             # --- 2. Enemy Risk Analysis ---
             if self.use_enemy_distance_reward:
@@ -856,10 +872,13 @@ class BulletHellEnv(gym.Env):
                 graze_factor = min(total_risk, self.risk_clip) / self.risk_clip
                 
                 if self.graze_requires_movement:
-                    # Only award if agent is actively moving (has any escape bonus)
-                    # This prevents rewarding "stuck in danger" scenarios
-                    if bullet_escape_bonus > 0 or enemy_escape_bonus > 0:
-                        graze_bonus = self.alive_reward * self.graze_bonus_multiplier * graze_factor
+                    # DECOUPLED: We now allow graze bonus if the agent is simply ALIVE in a high risk zone.
+                    # The "Movement" requirement was too strict for perpendicular dodging.
+                    # We still check if they are NOT getting significantly closer (suicide).
+                    # If risk_delta is massive positive (running into bullet), maybe deny?
+                    # For now, we trust the Safety Factor (which drops to 0) to handle suicide.
+                    # So "Graze" is just "High Risk Survival".
+                    graze_bonus = self.alive_reward * self.graze_bonus_multiplier * graze_factor
                 else:
                     # Original behavior: always award regardless of movement
                     graze_bonus = self.alive_reward * self.graze_bonus_multiplier * graze_factor
