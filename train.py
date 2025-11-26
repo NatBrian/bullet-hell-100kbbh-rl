@@ -47,7 +47,7 @@ def save_full_checkpoint(path, agent, epsilon, total_steps, episode, args):
                 pass
         raise RuntimeError(f"Failed to save checkpoint to {path}: {e}") from e
 
-def load_full_checkpoint(path, agent, epsilon_start):
+def load_full_checkpoint(path, agent, epsilon_start, current_reward_strategy):
     # Handle PyTorch >=2.6 weights_only default by explicitly allowing full pickled state
     try:
         ckpt = torch.load(path, map_location="cpu", weights_only=False)
@@ -55,11 +55,21 @@ def load_full_checkpoint(path, agent, epsilon_start):
         ckpt = torch.load(path, map_location="cpu")
     
     if "agent" in ckpt:
+        # Validate reward strategy
+        ckpt_args = ckpt.get("args", {})
+        ckpt_strategy = ckpt_args.get("reward_strategy", "baseline")
+        
+        if ckpt_strategy != current_reward_strategy:
+            raise ValueError(
+                f"Checkpoint reward strategy '{ckpt_strategy}' does not match current strategy '{current_reward_strategy}'. "
+                "Please use the same strategy or start a fresh training."
+            )
+
         agent.load_full_state(ckpt["agent"])
         epsilon = ckpt.get("epsilon", epsilon_start)
         total_steps = ckpt.get("total_steps", 0)
         start_episode = ckpt.get("episode", 0) + 1
-        print(f"Loaded full checkpoint from {path} (episode {start_episode})")
+        print(f"Loaded full checkpoint from {path} (episode {start_episode}, strategy: {ckpt_strategy})")
     else:
         # Fallback: treat as policy-only checkpoint
         agent.load(path)
@@ -130,7 +140,7 @@ def train(args):
     total_steps = 0
     if args.full_resume:
         if os.path.exists(args.full_resume):
-            epsilon, total_steps, start_episode = load_full_checkpoint(args.full_resume, agent, args.epsilon_start)
+            epsilon, total_steps, start_episode = load_full_checkpoint(args.full_resume, agent, args.epsilon_start, args.reward_strategy)
             print(f"Resumed full checkpoint from {args.full_resume}")
         else:
             print(f"Full checkpoint {args.full_resume} not found, starting fresh.")
