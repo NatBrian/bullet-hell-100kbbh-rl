@@ -15,6 +15,7 @@ This project implements a production-ready Deep Q-Network (DQN) agent to play th
     *   **Bullet Distance Rewards**: Penalizes proximity to bullets and rewards escaping. Includes closing penalty and escape bonus based on distance changes.
     *   **Enemy Distance Rewards**: Similar distance-based shaping for enemy avoidance.
     *   **Risk Clamping**: Prevents extreme reward values with configurable clipping.
+    *   **Configurable Background Threshold**: Uses `--bg-threshold` (default: 2) to fine-tune background detection sensitivity, reducing false positives.
     *   **Ship Detection Fallback**: Uses last known position when detection fails temporarily.
 *   **Smooth Movement**:
     *   **Stateful Input Handling**: Maintains key press state across frames for smooth, continuous movement instead of repeated tap inputs.
@@ -31,7 +32,9 @@ This project implements a production-ready Deep Q-Network (DQN) agent to play th
     *   **Double DQN**: Reduces overestimation bias for stable learning.
     *   **Experience Replay**: Stores past experiences to learn from them multiple times.
     *   **Frame Skip**: Configurable frame skip (default: 1) with proper reward accumulation.
-*   **Live Visualization**: Shows "Agent View" window displaying what the agent sees (grayscale/masked) with real-time stats (reward, luminance).
+*   **Live Visualization**: 
+    *   **Agent View**: `--render` shows what the agent sees (grayscale/masked) with real-time stats.
+    *   **Debug Mode**: `--render-debug` shows a detailed 3-panel view (Original | Mask | Annotated) with object detection overlays and reward metrics.
 
 ## Project Structure
 
@@ -39,7 +42,8 @@ This project implements a production-ready Deep Q-Network (DQN) agent to play th
 *   **`agent.py`**: The **Brain**. Contains the `CNNQNetwork` (PyTorch) and `DQNAgent` with Double DQN support.
 *   **`train.py`**: The **Training Loop**. Orchestrates training, logging, and atomic checkpointing.
 *   **`batch_train.py`**: The **Orchestrator**. Runs training in batches with automatic checkpoint cleanup and full resume support.
-*   **`generate_masks.py`**: **Vision System**. The `BulletMaskGenerator` class detects game entities and computes distances for reward shaping.
+*   **`generate_masks.py`**: **Vision System**. The `BulletMaskGenerator` class detects game entities and computes distances for reward shaping. Includes configurable background thresholding.
+*   **`debug_mask.py`**: **Debugging Tool**. Standalone script to visualize and tune mask generation parameters (like `--bg-threshold`) on static images.
 *   **`eval.py`**: The **Evaluator**. Runs the agent in greedy mode to test performance.
 *   **`utils.py`**: Helper functions.
 *   **`requirements.txt`**: Python dependencies.
@@ -141,6 +145,9 @@ Test a trained model in greedy mode (no exploration).
 # Run 10 test episodes with visualization
 python eval.py run --checkpoint checkpoints/latest.pth --episodes 10 --render
 
+# Run with detailed debug visualization
+python eval.py run --checkpoint checkpoints/latest.pth --episodes 10 --render-debug
+
 # Run 100 test episodes without rendering (faster)
 python eval.py run --checkpoint checkpoints/latest.pth --episodes 100
 ```
@@ -199,6 +206,9 @@ The AI operates in a continuous loop:
 *   **Training crashes/memory leaks**:
     *   Use `batch_train.py` instead of running `train.py` directly.
     *   Each batch restarts the process, clearing any accumulated memory leaks.
+*   **False positive bullets**:
+    *   If the agent detects too many bullets (false positives), try increasing the background threshold slightly (e.g., `--bg-threshold 5`).
+    *   Use `debug_mask.py` to tune this value on a specific screenshot.
 
 ## Advanced Configuration
 

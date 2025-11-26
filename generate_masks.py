@@ -3,46 +3,50 @@ Enhanced mask generation module for bullet-hell games.
 
 This module provides a `BulletMaskGenerator` class for creating semantic
 segmentation masks that distinguish the player's ship, hostile bullets,
-environmental geometry, and enemies from raw game frames.  The design
-retains the same public interface as the original implementation but
-introduces several improvements:
+environmental geometry, and enemies from raw game frames.
 
-* **Colour‐space reasoning** – Frames are converted to HSV space to
-  extract red/pink hues characteristic of bullets more reliably than
-  simple RGB distance measures.  Hue thresholds wrap around the hue
-  axis to handle both light pink and dark red bullets.
+The masking logic operates in several stages:
 
-* **Robust ship detection** – The player's ship remains a
-  constant pink colour.  It is detected by computing the Manhattan
-  distance to the known ship colour and selecting the largest connected
-  component.  This avoids confusing the ship with long chains of
-  bullets that may also include pink hues.
+0.  **Calibration (Optional)**:
+    *   The `calibrate_from_initial_frame` method analyzes a clean "start" frame (ship + background only).
+    *   It extracts all unique colors from this frame to build a precise background palette.
+    *   **Color Quantization**: If too many unique colors are found (e.g., due to compression artifacts), it clusters similar colors using a tolerance parameter to keep the palette size manageable for performance.
+    *   This dynamic calibration is crucial for accurate background subtraction in varying game environments.
 
-* **Improved enemy extraction** – Enemies appear as bright, hollow
-  shapes whose centres match the darker peach background.  The new
-  implementation first threshold‑segments all bright shapes then
-  iterates through their contours.  A contour is considered an enemy if
-  it has a child contour (i.e. a hole) **or** if the mean interior
-  luminance is sufficiently dark.  This heuristic allows detection of
-  enemies even when their hole partially overlaps with other bright
-  geometry.
+1.  **Background Subtraction**:
+    *   Uses **Manhattan distance** in RGB space to identify background pixels.
+    *   Compares each pixel to a set of calibrated background colors.
+    *   Pixels with a distance less than `bg_threshold` (default: 2) are labeled as background.
+    *   This strict thresholding helps eliminate false positive bullet detections from background artifacts.
 
-* **Background and geometry masking** – Pixels that closely match
-  pre‑analysed background colours are labelled background.  Remaining
-  bright geometry (e.g. decorative diamonds) is suppressed and not
-  misclassified as bullets.  Only pixels within the red/pink hue range
-  are considered bullets.
+2.  **Ship Detection**:
+    *   Identifies the player's ship by matching its specific pink color (`SHIP_COLOR_RGB`).
+    *   Uses Manhattan distance with a lenient threshold (`SHIP_THRESHOLD`).
+    *   Selects the **largest connected component** of matching pixels to distinguish the ship from similarly colored bullets.
 
-The top–level functions `analyze_background_colors` and
-`generate_masks` are preserved for backwards compatibility.  When run
-from the command line the script will analyse background colours in a
-directory of screenshots and write corresponding mask images.  The
-visualisation uses green for bullets, red for the player ship and blue
-for enemies.
+3.  **Bullet Detection**:
+    *   Converts the frame to **HSV color space** to reliably extract red/pink hues.
+    *   Uses two hue ranges to handle the red hue wrap-around (0-15 and 160-179).
+    *   Applies **morphological opening and closing** to remove noise and connect fragmented bullet pixels.
+    *   Filters out small noise regions based on area (`bullet_min_area`).
+    *   **Exclusion Zones**: Explicitly masks out the bottom-left HUD area and the bottom-right unknown area to prevent UI elements from being misclassified as bullets.
+    *   Subtracts known background and ship pixels to ensure exclusivity.
 
-Note: This file does not rely on any external I/O at import time and is
-designed to be safe to import as a library.  All heavy processing is
-performed inside methods which must be invoked explicitly.
+4.  **Enemy Detection**:
+    *   Thresholds the grayscale image to find **bright shapes** (`ENEMY_BRIGHT_THRESHOLD`).
+    *   Analyzes **contours and hierarchy**:
+        *   A contour is an enemy if it has a **child contour** (a hole/donut shape).
+        *   OR if the **mean interior luminance** is dark (indicating the background showing through a hollow enemy).
+    *   **Exclusion Zones**: Also applies HUD and unknown area masking to prevent UI elements from being detected as enemies.
+
+The module is designed for performance, using vectorized NumPy operations, pre-allocated buffers, and cached morphological kernels where possible.
+
+Key Classes:
+    *   `BulletMaskGenerator`: Main class for generating masks.
+
+Key Functions:
+    *   `analyze_background_colors`: Helper to calibrate background colors from a set of images.
+    *   `generate_masks`: Batch processing function for directory-based mask generation.
 """
 
 from __future__ import annotations
