@@ -235,7 +235,9 @@ class BulletMaskGenerator:
         bullet_mask_clean = cv2.morphologyEx(bullet_mask_clean, cv2.MORPH_CLOSE, self._morph_kernel)
         bullet_mask_bool = bullet_mask_clean.astype(bool)
         # Remove any pixels previously labelled as ship or background
-        bullet_mask_bool &= ~ship_mask
+        # Dilate ship mask to create a buffer zone that excludes bullets near ship edges
+        ship_mask_dilated = cv2.dilate(ship_mask.astype(np.uint8), self._morph_kernel, iterations=2).astype(bool)
+        bullet_mask_bool &= ~ship_mask_dilated
         bullet_mask_bool &= ~bg_mask
         # Filter out tiny regions that are likely noise.  Use connected
         # components to measure area.
@@ -247,7 +249,7 @@ class BulletMaskGenerator:
             if area >= self.bullet_min_area:
                 final_bullet_mask[bullet_labels == label] = True
 
-        # Exclude the bottom right corner (HUD score display) from bullet detection
+        # Exclude the bottom left corner (HUD score display) from bullet detection
         # The percentages here are empirically chosen based on the typical
         # layout of the game UI.
         hud_bullet_h = int(height * 0.05)
