@@ -84,7 +84,7 @@ def train(args):
     env = BulletHellEnv(
         window_title=args.window_title,
         game_path=args.game_path,
-        render_mode="human" if args.render else None,
+        render_mode="debug" if args.render_debug else ("human" if args.render else None),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
         alive_thresh=args.alive_thresh,
@@ -267,6 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--window_title", type=str, default="100KBBH")
     parser.add_argument("--game_path", type=str, default="assets/100KBBH-1.0.3.exe", help="Path to game executable")
     parser.add_argument("--render", action="store_true", help="Show agent view")
+    parser.add_argument("--render-debug", action="store_true", help="Show debug mask visualization (overrides --render)")
     parser.add_argument("--frame_skip", type=int, default=1)
     parser.add_argument("--stack_size", type=int, default=4)
     parser.add_argument("--alive_thresh", type=float, default=150.0)

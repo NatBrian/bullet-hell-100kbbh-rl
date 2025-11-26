@@ -24,7 +24,7 @@ except ImportError:
     DXCAM_AVAILABLE = False
 
 class BulletHellEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
+    metadata = {"render_modes": ["human", "rgb_array", "debug"], "render_fps": 30}
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class BulletHellEnv(gym.Env):
         self.last_enemy_dist = None
         
         # Initialize bullet mask generator if needed
-        if self.use_bullet_distance_reward or self.use_enemy_distance_reward:
+        if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode == "debug":
             self.mask_generator = BulletMaskGenerator()
         
         if self.save_screenshots > 0:
@@ -389,11 +389,11 @@ class BulletHellEnv(gym.Env):
                 time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
-            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward
+            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode == "debug"
             if use_mask:
                 gray_frame, color_frame = self._capture_frame(return_color=True)
                 mask = self.mask_generator.generate_mask(color_frame)
-                obs_frame = mask
+                obs_frame = mask if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) else gray_frame
             else:
                 gray_frame = self._capture_frame()
                 mask = None
@@ -456,6 +456,13 @@ class BulletHellEnv(gym.Env):
         # 6. Render
         if self.render_mode == "human":
             self._render_frame(last_render_frame, info)
+        elif self.render_mode == "debug":
+            # For debug mode, we need the mask and color frame
+            if mask is not None and 'color_frame' in locals():
+                self._render_debug_frame(mask, color_frame, info)
+            else:
+                # Fallback if mask wasn't generated for some reason
+                self._render_frame(last_render_frame, info)
 
         return self._get_obs(), total_reward, terminated, False, info
     
@@ -582,6 +589,135 @@ class BulletHellEnv(gym.Env):
             cv2.moveWindow(window_name, right + 20, top)
             
         cv2.waitKey(1)
+    
+    def _render_debug_frame(self, mask, color_frame, info):
+        """Render debug visualization showing mask detection details."""
+        from generate_masks import MASK_BACKGROUND, MASK_BULLET, MASK_SHIP, MASK_ENEMY
+        
+        # Get positions
+        ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
+        
+        # Create visualization panels
+        vis_mask = np.zeros((84, 84, 3), dtype=np.uint8)
+        vis_mask[mask == MASK_BACKGROUND] = [0, 0, 0]      # Black
+        vis_mask[mask == MASK_BULLET] = [0, 255, 0]        # Green
+        vis_mask[mask == MASK_SHIP] = [0, 0, 255]          # Red  
+        vis_mask[mask == MASK_ENEMY] = [255, 0, 0]         # Blue
+        
+        # Create detailed visualization with annotations
+        vis_detailed = vis_mask.copy()
+        
+        # Draw ship position (white circle)
+        if ship_pos is not None:
+            cv2.circle(vis_detailed, (ship_pos[1], ship_pos[0]), 3, (255, 255, 255), -1)
+        
+        # Draw bullet positions and find nearest
+        nearest_bullet_idx = None
+        if ship_pos is not None and len(bullet_positions) > 0:
+            min_dist = float('inf')
+            for idx, (bullet_y, bullet_x) in enumerate(bullet_positions):
+                dist = np.sqrt((ship_pos[0] - bullet_y)**2 + (ship_pos[1] - bullet_x)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_bullet_idx = idx
+        
+        for idx, (bullet_y, bullet_x) in enumerate(bullet_positions):
+            color = (0, 255, 255) if idx == nearest_bullet_idx else (128, 255, 128)
+            cv2.circle(vis_detailed, (bullet_x, bullet_y), 2, color, -1)
+            if ship_pos is not None:
+                line_color = (0, 200, 200) if idx == nearest_bullet_idx else (64, 64, 64)
+                cv2.line(vis_detailed, (ship_pos[1], ship_pos[0]), (bullet_x, bullet_y), line_color, 1)
+        
+        # Draw enemy positions and find nearest
+        nearest_enemy_idx = None
+        if ship_pos is not None and len(enemy_positions) > 0:
+            min_dist = float('inf')
+            for idx, (enemy_y, enemy_x) in enumerate(enemy_positions):
+                dist = np.sqrt((ship_pos[0] - enemy_y)**2 + (ship_pos[1] - enemy_x)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    nearest_enemy_idx = idx
+        
+        for idx, (enemy_y, enemy_x) in enumerate(enemy_positions):
+            color = (255, 255, 0) if idx == nearest_enemy_idx else (255, 128, 128)
+            cv2.circle(vis_detailed, (enemy_x, enemy_y), 2, color, -1)
+            if ship_pos is not None:
+                line_color = (255, 0, 255) if idx == nearest_enemy_idx else (150, 0, 150)
+                cv2.line(vis_detailed, (ship_pos[1], ship_pos[0]), (enemy_x, enemy_y), line_color, 1)
+        
+        # Convert color_frame to BGR if needed and ensure it's the right size
+        if color_frame.shape[:2] != (84, 84):
+            color_frame = cv2.resize(color_frame, (84, 84), interpolation=cv2.INTER_LINEAR)
+        
+        # Create info panel
+        info_panel = np.zeros((450, 600, 3), dtype=np.uint8)
+        y_offset = 25
+        line_height = 22
+        
+        # Count pixels
+        num_background = np.sum(mask == MASK_BACKGROUND)
+        num_bullet = np.sum(mask == MASK_BULLET)
+        num_ship = np.sum(mask == MASK_SHIP)
+        num_enemy = np.sum(mask == MASK_ENEMY)
+        
+        # Ship info
+        cv2.putText(info_panel, "=== SHIP ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Position: {ship_pos if ship_pos else 'NOT DETECTED'}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Pixels: {num_ship}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        y_offset += line_height + 5
+        
+        # Bullet info
+        cv2.putText(info_panel, "=== BULLETS ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Count: {len(bullet_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Pixels: {num_bullet}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Reward: {info['bullet_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        y_offset += line_height + 5
+        
+        # Enemy info
+        cv2.putText(info_panel, "=== ENEMIES ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Count: {len(enemy_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Pixels: {num_enemy}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Reward: {info['enemy_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        y_offset += line_height + 5
+        
+        # Total reward and metadata
+        cv2.putText(info_panel, f"TOTAL REWARD: {info['step_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y_offset += line_height + 10
+        cv2.putText(info_panel, f"Episode Reward: {info['episode_reward']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+        y_offset += line_height
+        cv2.putText(info_panel, f"Luminance: {info['luminance']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+        
+        # Resize for display (scale up from 84x84)
+        frame_large = cv2.resize(color_frame, (400, 400), interpolation=cv2.INTER_NEAREST)
+        vis_mask_large = cv2.resize(vis_mask, (400, 400), interpolation=cv2.INTER_NEAREST)
+        vis_detailed_large = cv2.resize(vis_detailed, (400, 400), interpolation=cv2.INTER_NEAREST)
+        
+        # Combine horizontally: Original | Mask | Detailed
+        top_row = np.hstack([frame_large, vis_mask_large, vis_detailed_large])
+        
+        # Add info panel below
+        bottom_row = np.zeros((450, 1200, 3), dtype=np.uint8)
+        bottom_row[:, 300:900] = info_panel
+        
+        display = np.vstack([top_row, bottom_row])
+        
+        window_name = "Debug: ENEMY | BULLET | SHIP Detection"
+        cv2.imshow(window_name, display)
+        
+        # Move window to the right of the game window
+        if self.window_rect:
+            _, top, right, _ = self.window_rect
+            cv2.moveWindow(window_name, right + 20, top)
+            
+        cv2.waitKey(1)
 
     def _release_all_keys(self):
         """Releases all currently pressed keys."""
@@ -594,5 +730,5 @@ class BulletHellEnv(gym.Env):
         if hasattr(self, 'pressed_keys'):
             self._release_all_keys()
 
-        if self.render_mode == "human":
+        if self.render_mode in ["human", "debug"]:
             cv2.destroyAllWindows()

@@ -17,16 +17,17 @@ def visualize_mask_detection(frame_bgr, reward_params):
     # Store original size
     original_shape = frame_bgr.shape
     
-    # Generate mask at NATIVE resolution for accurate detection
-    generator = BulletMaskGenerator()
-    mask_native = generator.generate_mask(frame_bgr)
-    
-    # Resize to 84x84 (matching what env.py does)
+    # CRITICAL: Match env.py processing order exactly!
+    # 1. Resize to 84x84 FIRST (matching env.py line 285)
     frame_84 = cv2.resize(frame_bgr, (84, 84), interpolation=cv2.INTER_LINEAR)
-    mask = cv2.resize(mask_native, (84, 84), interpolation=cv2.INTER_NEAREST)
     
-    # Get positions
+    # 2. THEN generate mask from the 84x84 frame (matching env.py behavior)
+    generator = BulletMaskGenerator()
+    mask = generator.generate_mask(frame_84)
+    
+    # Get positions from the mask
     ship_pos, bullet_positions, enemy_positions = generator.get_positions(mask)
+
     
     # Compute distances and rewards
     frame_diagonal = np.sqrt(84**2 + 84**2)

@@ -16,7 +16,7 @@ def generate_report(log_dir, output_file="report.html"):
 def evaluate(args):
     env = BulletHellEnv(
         window_title=args.window_title,
-        render_mode="human" if args.render else None,
+        render_mode="debug" if args.render_debug else ("human" if args.render else None),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
@@ -70,6 +70,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--episodes", type=int, default=5)
     eval_parser.add_argument("--window_title", type=str, default="100KBBH")
     eval_parser.add_argument("--render", action="store_true")
+    eval_parser.add_argument("--render-debug", action="store_true", help="Show debug mask visualization (overrides --render)")
     eval_parser.add_argument("--frame_skip", type=int, default=1)
     eval_parser.add_argument("--stack_size", type=int, default=4)
     eval_parser.add_argument("--dead_streak", type=int, default=3)
