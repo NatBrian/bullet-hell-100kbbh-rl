@@ -24,7 +24,7 @@ except ImportError:
     DXCAM_AVAILABLE = False
 
 class BulletHellEnv(gym.Env):
-    metadata = {"render_modes": ["human", "rgb_array", "debug"], "render_fps": 30}
+    metadata = {"render_modes": ["human", "rgb_array", "debug", "both"], "render_fps": 30}
 
     def __init__(
         self,
@@ -79,7 +79,7 @@ class BulletHellEnv(gym.Env):
         self.last_enemy_dist = None
         
         # Initialize bullet mask generator if needed
-        if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode == "debug":
+        if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode in ["debug", "both"]:
             self.mask_generator = BulletMaskGenerator(bg_threshold=self.bg_threshold)
         
         if self.save_screenshots > 0:
@@ -411,7 +411,7 @@ class BulletHellEnv(gym.Env):
                 time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
-            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode == "debug"
+            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode in ["debug", "both"]
             if use_mask:
                 gray_frame, color_frame = self._capture_frame(return_color=True)
                 mask = self.mask_generator.generate_mask(color_frame)
@@ -485,6 +485,10 @@ class BulletHellEnv(gym.Env):
             else:
                 # Fallback if mask wasn't generated for some reason
                 self._render_frame(last_render_frame, info)
+        elif self.render_mode == "both":
+            self._render_frame(last_render_frame, info)
+            if mask is not None and 'color_frame' in locals():
+                self._render_debug_frame(mask, color_frame, info)
 
         return self._get_obs(), total_reward, terminated, False, info
     
@@ -605,10 +609,15 @@ class BulletHellEnv(gym.Env):
         window_name = "Agent View"
         cv2.imshow(window_name, display)
         
-        # Move window to the right of the game window
+        # Move window
         if self.window_rect:
-            _, top, right, _ = self.window_rect
-            cv2.moveWindow(window_name, right + 20, top)
+            left, top, right, bottom = self.window_rect
+            if self.render_mode == "both":
+                # Place below the game window
+                cv2.moveWindow(window_name, left, bottom + 10)
+            else:
+                # Place to the right of the game window
+                cv2.moveWindow(window_name, right + 20, top)
             
         cv2.waitKey(1)
     

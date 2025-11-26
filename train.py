@@ -84,7 +84,7 @@ def train(args):
     env = BulletHellEnv(
         window_title=args.window_title,
         game_path=args.game_path,
-        render_mode="debug" if args.render_debug else ("human" if args.render else None),
+        render_mode="both" if (args.render and args.render_debug) else ("debug" if args.render_debug else ("human" if args.render else None)),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
         alive_thresh=args.alive_thresh,

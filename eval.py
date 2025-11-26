@@ -16,7 +16,7 @@ def generate_report(log_dir, output_file="report.html"):
 def evaluate(args):
     env = BulletHellEnv(
         window_title=args.window_title,
-        render_mode="debug" if args.render_debug else ("human" if args.render else None),
+        render_mode="both" if (args.render and args.render_debug) else ("debug" if args.render_debug else ("human" if args.render else None)),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
