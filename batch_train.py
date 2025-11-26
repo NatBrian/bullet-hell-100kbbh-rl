@@ -49,9 +49,16 @@ def pick_resume_path(checkpoint_dir: Path) -> Path | None:
     return None
 
 
-def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool, force_mss: bool):
+def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool, force_mss: bool, reward_strategy: str):
     import time
     import gc
+    
+    # Adjust checkpoint dir based on strategy (same logic as train.py)
+    strategy_suffix = f"_{reward_strategy}"
+    if not str(checkpoint_dir).endswith(strategy_suffix):
+        checkpoint_dir = Path(f"{str(checkpoint_dir)}_{reward_strategy}")
+    
+    print(f"Using checkpoint directory: {checkpoint_dir}")
     
     for i in range(batches):
         # Clean up old checkpoints to save disk space (keep only latest.pth and latest_full.pth)
@@ -64,6 +71,10 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
             "train.py",
             "--add-episodes",
             str(episodes_per_batch),
+            "--reward-strategy",
+            reward_strategy,
+            "--checkpoint-dir",
+            str(checkpoint_dir),
         ]
         if use_double_dqn:
             cmd.append("--double_dqn")
@@ -111,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", help="Render agent view")
     parser.add_argument("--keep-latest-only", action=argparse.BooleanOptionalAction, default=True, help="Only save latest checkpoints to save disk space (default: True). Use --no-keep-latest-only to disable.")
     parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
+    parser.add_argument("--reward-strategy", type=str, default="baseline", choices=["baseline", "safety"], help="Reward strategy to use")
     parser.add_argument(
         "--extra-args",
         nargs=argparse.REMAINDER,
@@ -128,4 +140,5 @@ if __name__ == "__main__":
         render=args.render,
         keep_latest_only=args.keep_latest_only,
         force_mss=args.force_mss,
+        reward_strategy=args.reward_strategy,
     )

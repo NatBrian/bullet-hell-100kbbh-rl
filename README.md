@@ -88,7 +88,10 @@ python batch_train.py --batches 100 --episodes-per-batch 100 --double-dqn --no-k
 You can run `train.py` directly for debugging, short runs, or custom configurations.
 
 ```powershell
-# Basic Training (1000 episodes)
+# Train with Safety Strategy
+python train.py --reward-strategy safety --alive-reward 4.0 --bullet-reward-coef 0.5 --death-penalty -100.0
+
+# Basic Training (Baseline)
 python train.py
 
 # With visualization and Double DQN

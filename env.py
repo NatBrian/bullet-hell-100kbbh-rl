@@ -38,6 +38,7 @@ class BulletHellEnv(gym.Env):
         dead_streak=3,
         action_duration=0.016, # REACTION TIME AI PRESS KEY IN SECONDS (1 frame at 60 FPS)
         save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
+        reward_strategy="baseline", # 'baseline' (old) or 'safety' (new)
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
         use_enemy_distance_reward=False, # Enable enemy distance reward shaping
@@ -63,6 +64,7 @@ class BulletHellEnv(gym.Env):
         self.action_duration = action_duration
         self.save_screenshots = save_screenshots
         self.last_screenshot_time = 0
+        self.reward_strategy = reward_strategy
         self.use_bullet_distance_reward = use_bullet_distance_reward
         self.bullet_reward_coef = bullet_reward_coef
         self.use_enemy_distance_reward = use_enemy_distance_reward
@@ -480,15 +482,33 @@ class BulletHellEnv(gym.Env):
             if terminated:
                 frame_reward = self.death_penalty
             else:
-                # Avoid granting survival reward on dark frames that precede death detection
-                frame_reward = 0.0 if lum < self.dead_thresh else self.alive_reward
+                # Base Alive Check
+                is_alive = lum >= self.dead_thresh
                 
-                # Add distance shaping if enabled
-                if use_mask and mask is not None:
-                    dist_reward, b_rew, e_rew = self._compute_distance_rewards(mask)
-                    frame_reward += dist_reward
-                    step_bullet_reward += b_rew
-                    step_enemy_reward += e_rew
+                if not is_alive:
+                    frame_reward = 0.0
+                else:
+                    if self.reward_strategy == "baseline":
+                        # --- BASELINE STRATEGY (Old) ---
+                        # Fixed alive reward + penalties for danger
+                        frame_reward = self.alive_reward
+                        if use_mask and mask is not None:
+                            dist_reward, b_rew, e_rew = self._compute_rewards_baseline(mask)
+                            frame_reward += dist_reward
+                            step_bullet_reward += b_rew
+                            step_enemy_reward += e_rew
+                            
+                    elif self.reward_strategy == "safety":
+                        # --- SAFETY STRATEGY (New) ---
+                        # Alive reward is conditional on safety (scaled by risk)
+                        # No direct penalties, only safety scaling + escape bonus
+                        if use_mask and mask is not None:
+                            frame_reward, b_rew, e_rew = self._compute_rewards_safety(mask)
+                            step_bullet_reward += b_rew
+                            step_enemy_reward += e_rew
+                        else:
+                            # Fallback if mask fails but we are alive
+                            frame_reward = self.alive_reward
             
             total_reward += frame_reward
             
@@ -516,6 +536,7 @@ class BulletHellEnv(gym.Env):
             "bullet_distance_reward": step_bullet_reward,
             "enemy_distance_reward": step_enemy_reward,
             "q_values": q_values,
+            "reward_strategy": self.reward_strategy
         }
         
         # 6. Render
@@ -535,15 +556,12 @@ class BulletHellEnv(gym.Env):
 
         return self._get_obs(), total_reward, terminated, False, info
     
-    def _compute_distance_rewards(self, mask):
+    def _compute_rewards_baseline(self, mask):
         """
-        Compute reward based on distance to nearest bullet and enemy using quadratic shaping.
-        
-        Args:
-            mask: 84x84 segmentation mask (BGR frame already downscaled)
-        
-        Returns:
-            tuple: (total_reward, bullet_reward_part, enemy_reward_part)
+        Baseline Reward Strategy (Original):
+        - Fixed positive reward for being alive.
+        - Negative penalties for being close to bullets/enemies.
+        - Negative penalties for bullet density.
         """
         try:
             # Extract positions
@@ -625,8 +643,113 @@ class BulletHellEnv(gym.Env):
             return total_reward, bullet_part, enemy_part
         
         except Exception as e:
-            # If mask generation fails, return neutral reward
             print(f"Reward computation failed: {e}")
+            return 0.0, 0.0, 0.0
+
+    def _compute_rewards_safety(self, mask):
+        """
+        Safety Reward Strategy (New):
+        - Alive reward is NOT guaranteed. It is scaled by safety.
+        - Safety Factor = 1.0 / (1.0 + Risk)
+        - If Risk is high (close to bullet), Safety Factor -> 0, so Reward -> 0.
+        - If Risk is low (far from bullet), Safety Factor -> 1, so Reward -> Alive Reward.
+        - Explicit 'Escape Bonus' for moving away from danger.
+        - NO direct subtraction penalties (prevents suicide loophole).
+        """
+        try:
+            # Extract positions
+            ship_pos, bullet_positions, enemy_positions = self.mask_generator.get_positions(mask)
+            
+            # Track last known ship position
+            if ship_pos is not None:
+                self.last_ship_pos = ship_pos
+            elif self.last_ship_pos is not None:
+                ship_pos = self.last_ship_pos
+                # If ship is lost, we assume high risk/low safety, but don't penalize heavily yet
+                # Just give 0 reward
+                return 0.0, 0.0, 0.0
+            else:
+                return 0.0, 0.0, 0.0
+            
+            frame_diagonal = np.sqrt(84**2 + 84**2)
+            
+            # Initialize Risks
+            bullet_risk = 0.0
+            enemy_risk = 0.0
+            
+            bullet_escape_bonus = 0.0
+            enemy_escape_bonus = 0.0
+
+            # --- 1. Bullet Risk Analysis ---
+            if self.use_bullet_distance_reward:
+                dist = self.mask_generator.compute_nearest_bullet_distance(
+                    ship_pos, bullet_positions, normalize_by=frame_diagonal
+                )
+                
+                if dist is not None:
+                    # Calculate Risk (Inverse Distance)
+                    # We use the coefficients to tune how "wide" the danger zone is
+                    # Higher coef = wider danger zone
+                    raw_risk = 1.0 / (dist + 1e-6) + self.bullet_quadratic_coef / (dist**2 + 1e-6)
+                    bullet_risk = min(raw_risk, self.risk_clip)
+                    
+                    # Escape Bonus: Only reward moving AWAY
+                    if self.last_bullet_dist is not None:
+                        delta = self.last_bullet_dist - dist # Positive if getting closer (bad), Negative if moving away (good)
+                        if delta < 0: # Moving away
+                            # Scale bonus by how close we are (moving away when close is more valuable)
+                            urgency = bullet_risk / self.risk_clip
+                            bullet_escape_bonus = min(-delta * self.risk_clip * urgency * 5.0, 1.0) 
+                    
+                    self.last_bullet_dist = dist
+                else:
+                    self.last_bullet_dist = None
+
+            # --- 2. Enemy Risk Analysis ---
+            if self.use_enemy_distance_reward:
+                dist = self.mask_generator.compute_nearest_enemy_distance(
+                    ship_pos, enemy_positions, normalize_by=frame_diagonal
+                )
+                
+                if dist is not None:
+                    raw_risk = 1.0 / (dist + 1e-6) + self.enemy_quadratic_coef / (dist**2 + 1e-6)
+                    enemy_risk = min(raw_risk, self.risk_clip)
+                    
+                    if self.last_enemy_dist is not None:
+                        delta = self.last_enemy_dist - dist
+                        if delta < 0: # Moving away
+                            urgency = enemy_risk / self.risk_clip
+                            enemy_escape_bonus = min(-delta * self.risk_clip * urgency * 5.0, 1.0)
+                            
+                    self.last_enemy_dist = dist
+                else:
+                    self.last_enemy_dist = None
+
+            # --- 3. Calculate Final Reward ---
+            
+            # Aggregate Risk
+            # We combine risks. If either is high, safety is low.
+            total_risk = bullet_risk + enemy_risk
+            
+            # Safety Factor (0.0 to 1.0)
+            # If total_risk is 0, safety is 1.0
+            # If total_risk is high (e.g. 10), safety is ~0.1
+            safety_factor = 1.0 / (1.0 + total_risk)
+            
+            # Conditional Alive Reward
+            # You only get paid if you are safe.
+            conditional_alive_reward = self.alive_reward * safety_factor
+            
+            # Add Escape Bonuses (Incentive to improve safety)
+            # These are small "dopamine hits" for doing the right thing
+            total_escape_bonus = bullet_escape_bonus + enemy_escape_bonus
+            
+            total_reward = conditional_alive_reward + total_escape_bonus
+            
+            return total_reward, bullet_escape_bonus, enemy_escape_bonus
+
+        except Exception as e:
+            print(f"Safety reward computation failed: {e}")
             return 0.0, 0.0, 0.0
 
     def _render_frame(self, frame, info):

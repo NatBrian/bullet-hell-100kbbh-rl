@@ -72,6 +72,13 @@ def load_full_checkpoint(path, agent, epsilon_start):
 def train(args):
 
     # Setup paths
+    # Append strategy to checkpoint/log dirs to avoid mixing
+    strategy_suffix = f"_{args.reward_strategy}"
+    if not args.checkpoint_dir.endswith(strategy_suffix):
+        args.checkpoint_dir = f"{args.checkpoint_dir}_{args.reward_strategy}"
+    if not args.log_dir.endswith(strategy_suffix):
+        args.log_dir = f"{args.log_dir}_{args.reward_strategy}"
+        
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
     
@@ -91,6 +98,7 @@ def train(args):
         dead_thresh=args.dead_thresh,
         dead_streak=args.dead_streak,
         save_screenshots=args.save_screenshots,
+        reward_strategy=args.reward_strategy,
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
         bullet_reward_coef=args.bullet_reward_coef,
         use_enemy_distance_reward=not args.no_enemy_distance_reward,
@@ -305,6 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
     parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
     parser.add_argument("--risk-clip", type=float, default=10.0, help="Clip value for distance-based risk")
+    parser.add_argument("--reward-strategy", type=str, default="baseline", choices=["baseline", "safety"], help="Reward strategy to use")
     
     # Bullet distance reward params (enabled by default)
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")

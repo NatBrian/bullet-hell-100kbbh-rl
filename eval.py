@@ -19,6 +19,7 @@ def evaluate(args):
         render_mode="both" if (args.render and args.render_debug) else ("debug" if args.render_debug else ("human" if args.render else None)),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
+        reward_strategy=args.reward_strategy,
         use_bullet_distance_reward=not args.no_bullet_distance_reward,
         bullet_reward_coef=args.bullet_reward_coef,
         use_enemy_distance_reward=not args.no_enemy_distance_reward,
@@ -91,6 +92,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
     eval_parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
     eval_parser.add_argument("--risk-clip", type=float, default=10.0, help="Clip value for distance-based risk")
+    eval_parser.add_argument("--reward-strategy", type=str, default="baseline", choices=["baseline", "safety"], help="Reward strategy to use")
     eval_parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
 
     # Report command
