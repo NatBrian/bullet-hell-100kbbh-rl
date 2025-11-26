@@ -208,6 +208,13 @@ class BulletHellEnv(gym.Env):
         except Exception:
             pass # Might fail if another window is actively focused, but we try.
 
+        # Move window to top-left corner to ensure visibility and space for debug windows
+        # Get current size to preserve it
+        rect = win32gui.GetWindowRect(hwnd)
+        w = rect[2] - rect[0]
+        h = rect[3] - rect[1]
+        win32gui.MoveWindow(hwnd, 0, 0, w, h, True)
+
         rect = win32gui.GetWindowRect(hwnd)
         # rect is (left, top, right, bottom)
         # Adjust for borders if needed, but usually raw rect is okay for visual games
@@ -374,7 +381,7 @@ class BulletHellEnv(gym.Env):
         
         return self._get_obs(), {}
 
-    def step(self, action):
+    def step(self, action, q_values=None):
         """Execute action with proper frame skipping.
         
         Frame skip means:
@@ -473,6 +480,7 @@ class BulletHellEnv(gym.Env):
             "frames_executed": frame_idx + 1,  # How many frames were actually executed
             "bullet_distance_reward": step_bullet_reward,
             "enemy_distance_reward": step_enemy_reward,
+            "q_values": q_values,
         }
         
         # 6. Render
@@ -614,10 +622,10 @@ class BulletHellEnv(gym.Env):
             left, top, right, bottom = self.window_rect
             if self.render_mode == "both":
                 # Place below the game window
-                cv2.moveWindow(window_name, left, bottom + 10)
+                cv2.moveWindow(window_name, left, bottom)
             else:
                 # Place to the right of the game window
-                cv2.moveWindow(window_name, right + 20, top)
+                cv2.moveWindow(window_name, right, top)
             
         cv2.waitKey(1)
     
@@ -736,7 +744,51 @@ class BulletHellEnv(gym.Env):
         
         # Add info panel below
         bottom_row = np.zeros((450, 1200, 3), dtype=np.uint8)
-        bottom_row[:, 300:900] = info_panel
+        bottom_row[:, 0:600] = info_panel
+
+        # Draw Q-values if available
+        if info.get('q_values') is not None:
+            q_vals = info['q_values']
+            # Normalize for display
+            q_min, q_max = np.min(q_vals), np.max(q_vals)
+            if q_max != q_min:
+                q_norm = (q_vals - q_min) / (q_max - q_min)
+            else:
+                q_norm = np.zeros_like(q_vals)
+            
+            # Bar chart parameters
+            bar_width = 40
+            bar_spacing = 15
+            chart_x = 650
+            chart_y = 400
+            max_bar_height = 200
+            
+            # Action labels
+            action_names = ["Idle", "W", "S", "A", "D", "WA", "WD", "SA", "SD"]
+            
+            cv2.putText(bottom_row, "Q-VALUES", (chart_x, chart_y - max_bar_height - 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+            for i, val in enumerate(q_norm):
+                x = chart_x + i * (bar_width + bar_spacing)
+                h = int(val * max_bar_height)
+                
+                # Color based on value (Red=Low, Green=High)
+                color = (0, int(255 * val), int(255 * (1 - val)))
+                
+                # Highlight selected action
+                if i == self.last_action:
+                    cv2.rectangle(bottom_row, (x - 2, chart_y - h - 2), (x + bar_width + 2, chart_y + 2), (255, 255, 255), 2)
+                
+                cv2.rectangle(bottom_row, (x, chart_y - h), (x + bar_width, chart_y), color, -1)
+                
+                # Label
+                cv2.putText(bottom_row, action_names[i], (x, chart_y + 15), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+                
+                # Value
+                cv2.putText(bottom_row, f"{q_vals[i]:.1f}", (x, chart_y - h - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, (200, 200, 200), 1)
         
         display = np.vstack([top_row, bottom_row])
         
@@ -746,7 +798,7 @@ class BulletHellEnv(gym.Env):
         # Move window to the right of the game window
         if self.window_rect:
             _, top, right, _ = self.window_rect
-            cv2.moveWindow(window_name, right + 20, top)
+            cv2.moveWindow(window_name, right, top)
             
         cv2.waitKey(1)
 

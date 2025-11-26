@@ -138,14 +138,25 @@ class DQNAgent:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.memory = ReplayBuffer(buffer_size, input_shape=input_shape)
 
-    def act(self, state, epsilon=0.0):
+    def act(self, state, epsilon=0.0, return_q_values=False):
         if random.random() < epsilon:
-            return random.randrange(self.num_actions)
+            action = random.randrange(self.num_actions)
+            if return_q_values:
+                # For random actions, we still want to see the Q-values if possible
+                with torch.no_grad():
+                    state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device) / 255.0
+                    q_values = self.policy_net(state_t)
+                    return action, q_values.cpu().numpy()[0]
+            return action
         
         with torch.no_grad():
             state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device) / 255.0
             q_values = self.policy_net(state_t)
-            return q_values.argmax().item()
+            action = q_values.argmax().item()
+            
+            if return_q_values:
+                return action, q_values.cpu().numpy()[0]
+            return action
 
     def learn(self):
         if len(self.memory) < self.batch_size:

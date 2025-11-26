@@ -158,10 +158,14 @@ def train(args):
         
         while True:
             # Select Action
-            action = agent.act(state, epsilon)
+            if args.render or args.render_debug:
+                action, q_values = agent.act(state, epsilon, return_q_values=True)
+            else:
+                action = agent.act(state, epsilon)
+                q_values = None
             
             # Step
-            next_state, reward, terminated, truncated, info = env.step(action)
+            next_state, reward, terminated, truncated, info = env.step(action, q_values=q_values)
             done = terminated or truncated
             
             # Store

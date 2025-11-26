@@ -49,8 +49,13 @@ def evaluate(args):
         done = False
         
         while not done:
-            action = agent.act(state, epsilon=0.0) # Greedy
-            next_state, reward, terminated, truncated, _ = env.step(action)
+            if args.render or args.render_debug:
+                action, q_values = agent.act(state, epsilon=0.0, return_q_values=True)
+            else:
+                action = agent.act(state, epsilon=0.0)
+                q_values = None
+                
+            next_state, reward, terminated, truncated, _ = env.step(action, q_values=q_values)
             done = terminated or truncated
             state = next_state
             episode_reward += reward
