@@ -50,6 +50,9 @@ def pick_resume_path(checkpoint_dir: Path) -> Path | None:
 
 
 def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra_args: list[str], use_double_dqn: bool, render: bool, keep_latest_only: bool, force_mss: bool):
+    import time
+    import gc
+    
     for i in range(batches):
         # Clean up old checkpoints to save disk space (keep only latest.pth and latest_full.pth)
         if keep_latest_only:
@@ -83,9 +86,20 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
 
         print(f"[Batch {i+1}/{batches}] Running: {' '.join(cmd)}")
         result = subprocess.run(cmd)
+        
+        # Critical: Add cleanup delay between batches
+        # This allows the previous train.py process to fully release all resources
+        # (window handles, keyboard state, MSS/DXCam, OpenCV windows)
+        print(f"[Batch {i+1}] Process exited with code {result.returncode}")
+        print("[Cleanup] Waiting for resource cleanup...")
+        time.sleep(2.0)  # 2 second delay for OS to release resources
+        gc.collect()  # Force garbage collection
+        print("[Cleanup] Ready for next batch")
+        
         if result.returncode != 0:
-            print(f"[Batch {i+1}] Training exited with code {result.returncode}; stopping.")
+            print(f"[Batch {i+1}] Training exited with non-zero code {result.returncode}; stopping.")
             break
+
 
 
 if __name__ == "__main__":
