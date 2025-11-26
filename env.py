@@ -49,6 +49,7 @@ class BulletHellEnv(gym.Env):
         death_penalty=-20.0,  # Penalty on death
         risk_clip=10.0,  # Clip for distance-based risk
         force_mss=False, # Force usage of MSS for screen capture
+        bg_threshold=2, # Background color matching threshold
     ):
         super().__init__()
         self.window_title = window_title
@@ -73,12 +74,13 @@ class BulletHellEnv(gym.Env):
         self.death_penalty = death_penalty
         self.risk_clip = risk_clip
         self.force_mss = force_mss
+        self.bg_threshold = bg_threshold
         self.last_bullet_dist = None
         self.last_enemy_dist = None
         
         # Initialize bullet mask generator if needed
         if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode == "debug":
-            self.mask_generator = BulletMaskGenerator()
+            self.mask_generator = BulletMaskGenerator(bg_threshold=self.bg_threshold)
         
         if self.save_screenshots > 0:
             os.makedirs("game_screenshots", exist_ok=True)
@@ -337,8 +339,28 @@ class BulletHellEnv(gym.Env):
             time.sleep(0.1)
             pydirectinput.press('space') # Keep tapping space if stuck on death screen
 
-        # 4. Fill stack
+        # 4. Calibrate mask generator (if using mask-based rewards)
+        # IMPORTANT: Capture AFTER game is fully ALIVE, not during PAUSE/DEAD/END
+        # Wait a small amount to ensure transition is complete and game is stable
         use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward
+        if use_mask and hasattr(self, 'mask_generator'):
+            # Small delay to ensure game has fully transitioned to ALIVE state
+            # and any fade-in animations are complete
+            time.sleep(0.2)
+            
+            # Capture and verify it's still in ALIVE state (bright)
+            gray_check, calibration_frame = self._capture_frame(return_color=True)
+            lum_check = np.mean(gray_check)
+            
+            if lum_check > self.alive_thresh:
+                # Game is confirmed ALIVE, safe to calibrate
+                self.mask_generator.calibrate_from_initial_frame(calibration_frame, tolerance=10)
+            else:
+                # Luminance dropped - game went back to PAUSE/DEAD
+                # Skip calibration this time, will retry next episode
+                print(f"[Warning] Skipped calibration: luminance {lum_check:.1f} < {self.alive_thresh}")
+        
+        # 5. Fill stack
         if use_mask:
             frame_gray, frame_color = self._capture_frame(return_color=True)
             mask = self.mask_generator.generate_mask(frame_color)

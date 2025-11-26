@@ -101,7 +101,8 @@ def train(args):
         alive_reward=args.alive_reward,
         death_penalty=args.death_penalty,
         risk_clip=args.risk_clip,
-        force_mss=args.force_mss
+        force_mss=args.force_mss,
+        bg_threshold=args.bg_threshold
     )
 
     # Agent
@@ -314,6 +315,7 @@ if __name__ == "__main__":
     
     # Debugging
     parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
+    parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
 
     args = parser.parse_args()
     train(args)

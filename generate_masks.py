@@ -63,7 +63,7 @@ from tqdm import tqdm
 SHIP_COLOR_RGB: Tuple[int, int, int] = (255, 82, 163)
 
 # Thresholds for Manhattan distance in RGB space
-BG_THRESHOLD: int = 25
+BG_THRESHOLD: int = 2
 SHIP_THRESHOLD: int = 50
 
 # Mask values
@@ -107,7 +107,7 @@ class BulletMaskGenerator:
     unchanged for compatibility with downstream code.
     """
 
-    def __init__(self, bg_colors_bgr: Optional[Iterable[np.ndarray]] = None) -> None:
+    def __init__(self, bg_colors_bgr: Optional[Iterable[np.ndarray]] = None, bg_threshold: int = BG_THRESHOLD) -> None:
         # Convert default RGB colours to BGR if no custom list was supplied
         if bg_colors_bgr is None:
             bg_colors_bgr = [np.array(c[::-1], dtype=np.uint8) for c in DEFAULT_BG_COLORS_RGB]
@@ -126,6 +126,9 @@ class BulletMaskGenerator:
         if not enemy_bg:
             enemy_bg = list(self.bg_colors_bgr)
         self.enemy_bg_colors_bgr: np.ndarray = np.array(enemy_bg, dtype=np.uint8)
+        
+        # Threshold for background color matching (Manhattan distance)
+        self.bg_threshold = bg_threshold
 
         # Precompute HSV ranges for bullet hues (red/pink).  Two ranges
         # are necessary because red wraps around the hue axis.  Hue values
@@ -151,6 +154,61 @@ class BulletMaskGenerator:
         self._cached_height: int = 0
         self._cached_width: int = 0
         self._reusable_temp_mask: Optional[np.ndarray] = None
+        
+        # Calibration data is now integrated directly into self.bg_colors_bgr
+    
+    def calibrate_from_initial_frame(self, initial_frame_bgr: np.ndarray, tolerance: int = 5) -> int:
+        """Calibrate background and ship colors from an initial game frame.
+        
+        This updates the internal list of known background colors (self.bg_colors_bgr)
+        with all unique colors found in the initial frame. These colors will be
+        marked as MASK_BACKGROUND and excluded from bullet detection.
+        
+        Args:
+            initial_frame_bgr: BGR frame from game initialization.
+            tolerance: Color clustering tolerance. Lower = more precise.
+        
+        Returns:
+            Number of unique calibration colors added.
+        """
+        # Resize to 84x84 to match game processing
+        frame_small = cv2.resize(initial_frame_bgr, (84, 84), interpolation=cv2.INTER_LINEAR)
+        
+        # Extract all unique colors from the frame
+        pixels = frame_small.reshape(-1, 3)
+        unique_colors_bgr = np.unique(pixels, axis=0)
+        
+        # Cluster similar colors to reduce the number of comparisons
+        # We use a simple grid-based clustering (quantization)
+        # Safety loop: if too many colors, increase tolerance to prevent memory explosion
+        current_tolerance = tolerance if tolerance > 0 else 1
+        
+        while len(unique_colors_bgr) > 2000:
+            # Quantize colors to the nearest multiple of 'current_tolerance'
+            quantized = (unique_colors_bgr // current_tolerance) * current_tolerance
+            unique_colors_bgr = np.unique(quantized, axis=0)
+            
+            # Add the center of the bin to be more representative
+            unique_colors_bgr = np.clip(unique_colors_bgr + current_tolerance // 2, 0, 255).astype(np.uint8)
+            
+            if len(unique_colors_bgr) <= 2000:
+                break
+                
+            # If still too many, increase tolerance significantly
+            current_tolerance += 5
+            print(f"[Calibration] Too many colors ({len(unique_colors_bgr)}), increasing tolerance to {current_tolerance}")
+        
+        # Update the background colors list
+        
+        # Update the background colors list
+        # We replace the default list entirely since we have the exact game state
+        self.bg_colors_bgr = unique_colors_bgr
+        
+        # Update the cached int16 version for vectorized operations
+        self._bg_colors_int16 = self.bg_colors_bgr.astype(np.int16)
+        
+        print(f"[Calibration] Updated background palette with {len(unique_colors_bgr)} colors (tolerance={tolerance})")
+        return len(unique_colors_bgr)
 
     def generate_mask(self, frame_bgr: np.ndarray, skip_enemy: bool = False) -> np.ndarray:
         """Generate a segmentation mask from a single BGR frame.
@@ -185,7 +243,7 @@ class BulletMaskGenerator:
             dist = diff.sum(axis=3)
             # For each pixel take the minimum distance across all background colours
             min_dist_bg = dist.min(axis=2)
-            bg_mask = min_dist_bg < BG_THRESHOLD
+            bg_mask = min_dist_bg < self.bg_threshold
             # Label background pixels
             mask[bg_mask] = MASK_BACKGROUND
         else:
@@ -227,6 +285,7 @@ class BulletMaskGenerator:
         bullet_mask_hsv = np.zeros((height, width), dtype=np.uint8)
         for lower, upper in self.bullet_hsv_ranges:
             bullet_mask_hsv |= cv2.inRange(frame_hsv, lower, upper)
+        
         # Morphological operations: opening removes small noise; closing
         # fills small holes within bullets or chains of bullets.  A small
         # kernel is used to preserve fine details of the bullet shapes.
@@ -253,7 +312,7 @@ class BulletMaskGenerator:
         # The percentages here are empirically chosen based on the typical
         # layout of the game UI.
         hud_bullet_h = int(height * 0.05)
-        hud_bullet_w = int(width * 0.50)
+        hud_bullet_w = int(width * 1)
         final_bullet_mask[height - hud_bullet_h:, :hud_bullet_w] = 0
 
         # Assign bullet label
@@ -279,6 +338,12 @@ class BulletMaskGenerator:
             hud_h = int(height * 0.08)
             hud_w = int(width * 0.40)
             bright_mask[height - hud_h :, :hud_w] = 0
+
+            # Exclude unknown colors (bottom right area) from consideration
+            unknown_h = int(height * 0.08)
+            unknown_w = int(width * 0.60)
+            bright_mask[height - unknown_h:, width - unknown_w:] = 0
+
             # Close small gaps in bright shapes to ensure contours are
             # contiguous
             bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_CLOSE, self._morph_kernel)

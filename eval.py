@@ -28,7 +28,8 @@ def evaluate(args):
         alive_reward=args.alive_reward,
         death_penalty=args.death_penalty,
         risk_clip=args.risk_clip,
-        dead_streak=args.dead_streak
+        dead_streak=args.dead_streak,
+        bg_threshold=args.bg_threshold
     )
 
     agent = DQNAgent(
@@ -85,6 +86,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
     eval_parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
     eval_parser.add_argument("--risk-clip", type=float, default=10.0, help="Clip value for distance-based risk")
+    eval_parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
 
     # Report command
     report_parser = subparsers.add_parser("report")

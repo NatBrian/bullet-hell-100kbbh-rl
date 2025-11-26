@@ -6,13 +6,14 @@ import numpy as np
 from generate_masks import BulletMaskGenerator, MASK_BACKGROUND, MASK_BULLET, MASK_SHIP, MASK_ENEMY
 import argparse
 
-def visualize_mask_detection(frame_bgr, reward_params):
+def visualize_mask_detection(frame_bgr, reward_params, calibration_frame_bgr=None, bg_threshold=2):
     """
     Visualize what the mask generator detects and compute the reward.
     
     Args:
         frame_bgr: Input frame in BGR format (any size)
         reward_params: Dict with reward calculation parameters
+        calibration_frame_bgr: Optional calibration frame for background learning
     """
     # Store original size
     original_shape = frame_bgr.shape
@@ -21,8 +22,14 @@ def visualize_mask_detection(frame_bgr, reward_params):
     # 1. Resize to 84x84 FIRST (matching env.py line 285)
     frame_84 = cv2.resize(frame_bgr, (84, 84), interpolation=cv2.INTER_LINEAR)
     
-    # 2. THEN generate mask from the 84x84 frame (matching env.py behavior)
-    generator = BulletMaskGenerator()
+    # 2. Create and optionally calibrate generator
+    generator = BulletMaskGenerator(bg_threshold=bg_threshold)
+    if calibration_frame_bgr is not None:
+        calib_84 = cv2.resize(calibration_frame_bgr, (84, 84), interpolation=cv2.INTER_LINEAR)
+        num_colors = generator.calibrate_from_initial_frame(calib_84, tolerance=10)
+        print(f"[Debug] Calibrated with {num_colors} colors from calibration frame")
+    
+    # 3. THEN generate mask from the 84x84 frame (matching env.py behavior)
     mask = generator.generate_mask(frame_84)
     
     # Get positions from the mask
@@ -249,6 +256,8 @@ def visualize_mask_detection(frame_bgr, reward_params):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Debug ENEMY, BULLET, and SHIP detection")
     parser.add_argument("--image", type=str, required=True, help="Path to image file to analyze")
+    parser.add_argument("--calibration-frame", type=str, default=None, help="Path to calibration frame (initial game state with ship+background only)")
+    parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
     
     # Reward parameters (matching env.py defaults)
     parser.add_argument("--bullet-reward-coef", type=float, default=1.0, help="Bullet reward coefficient")
@@ -279,8 +288,17 @@ if __name__ == "__main__":
         'risk_clip': args.risk_clip,
     }
     
+    # Calibrate if calibration frame is provided
+    calibration_frame = None
+    if args.calibration_frame:
+        calibration_frame = cv2.imread(args.calibration_frame)
+        if calibration_frame is None:
+            print(f"Warning: Could not load calibration frame from {args.calibration_frame}")
+        else:
+            print(f"Loading calibration frame: {args.calibration_frame}")
+    
     # Analyze
-    display, mask = visualize_mask_detection(frame, reward_params)
+    display, mask = visualize_mask_detection(frame, reward_params, calibration_frame, bg_threshold=args.bg_threshold)
     
     # Show
     cv2.imshow("Debug: ENEMY | BULLET | SHIP Detection", display)
