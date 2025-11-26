@@ -451,6 +451,12 @@ class BulletHellEnv(gym.Env):
         total_reward = 0.0
         step_bullet_reward = 0.0
         step_enemy_reward = 0.0
+        step_safety_factor = 1.0  # Default to safe
+        step_total_risk = 0.0
+        step_graze_bonus = 0.0
+        step_dodge_skill_bonus = 0.0
+        step_bullet_escape_bonus = 0.0
+        step_enemy_escape_bonus = 0.0
         terminated = False
         last_frame = None  # what goes into the stack
         last_render_frame = None  # what we show in render mode (original grayscale)
@@ -519,19 +525,32 @@ class BulletHellEnv(gym.Env):
                         # Fixed alive reward + penalties for danger
                         frame_reward = self.alive_reward
                         if use_mask and mask is not None:
-                            dist_reward, b_rew, e_rew = self._compute_rewards_baseline(mask)
+                            dist_reward, b_rew, e_rew, s_factor, t_risk, g_bonus, d_bonus, b_escape, e_escape = self._compute_rewards_baseline(mask)
                             frame_reward += dist_reward
                             step_bullet_reward += b_rew
                             step_enemy_reward += e_rew
+                            step_safety_factor = s_factor  # Will be 1.0 for baseline
+                            step_total_risk = t_risk  # Will be 0.0 for baseline
+                            step_graze_bonus = g_bonus  # Will be 0.0 for baseline
+                            step_dodge_skill_bonus = d_bonus  # Will be 0.0 for baseline
+                            step_bullet_escape_bonus = b_escape  # Will be 0.0 for baseline
+                            step_enemy_escape_bonus = e_escape  # Will be 0.0 for baseline
                             
                     elif self.reward_strategy == "safety":
                         # --- SAFETY STRATEGY (New) ---
                         # Alive reward is conditional on safety (scaled by risk)
                         # No direct penalties, only safety scaling + escape bonus
                         if use_mask and mask is not None:
-                            frame_reward, b_rew, e_rew = self._compute_rewards_safety(mask)
+                            frame_reward, b_rew, e_rew, s_factor, t_risk, g_bonus, d_bonus, b_escape, e_escape = self._compute_rewards_safety(mask)
                             step_bullet_reward += b_rew
                             step_enemy_reward += e_rew
+                            # For safety, track the LAST (most recent) frame's metrics
+                            step_safety_factor = s_factor
+                            step_total_risk = t_risk
+                            step_graze_bonus += g_bonus
+                            step_dodge_skill_bonus += d_bonus
+                            step_bullet_escape_bonus += b_escape
+                            step_enemy_escape_bonus += e_escape
                         else:
                             # Fallback if mask fails but we are alive
                             frame_reward = self.alive_reward
@@ -556,13 +575,20 @@ class BulletHellEnv(gym.Env):
             "luminance": last_lum,
             "episode_reward": self.episode_reward,
             "step_reward": total_reward,
-            "bullet_distance_enabled": self.use_bullet_distance_reward,
+           "bullet_distance_enabled": self.use_bullet_distance_reward,
             "enemy_distance_enabled": self.use_enemy_distance_reward,
             "frames_executed": frame_idx + 1,  # How many frames were actually executed
             "bullet_distance_reward": step_bullet_reward,
             "enemy_distance_reward": step_enemy_reward,
             "q_values": q_values,
-            "reward_strategy": self.reward_strategy
+            "reward_strategy": self.reward_strategy,
+            # Safety strategy metrics
+            "safety_factor": step_safety_factor,
+            "total_risk": step_total_risk,
+            "graze_bonus": step_graze_bonus,
+            "dodge_skill_bonus": step_dodge_skill_bonus,
+            "bullet_escape_bonus": step_bullet_escape_bonus,
+            "enemy_escape_bonus": step_enemy_escape_bonus,
         }
         
         # 6. Render
@@ -588,6 +614,11 @@ class BulletHellEnv(gym.Env):
         - Fixed positive reward for being alive.
         - Negative penalties for being close to bullets/enemies.
         - Negative penalties for bullet density.
+        
+        Returns:
+            tuple: (total_reward, bullet_part, enemy_part, safety_factor, total_risk, 
+                   graze_bonus, dodge_skill_bonus, bullet_escape_bonus, enemy_escape_bonus)
+                   Safety metrics are stub values for baseline: (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         """
         try:
             # Extract positions
@@ -599,10 +630,10 @@ class BulletHellEnv(gym.Env):
             elif self.last_ship_pos is not None:
                 # Ship detection failed, use last known position with penalty
                 ship_pos = self.last_ship_pos
-                return -0.5, 0.0, 0.0
+                return -0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
             else:
                 # Can't find ship at all - heavily penalize
-                return -1.0, 0.0, 0.0
+                return -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
             
             bullet_part = 0.0
             enemy_part = 0.0
@@ -666,11 +697,12 @@ class BulletHellEnv(gym.Env):
                     self.last_enemy_dist = None
 
             total_reward = bullet_part + enemy_part
-            return total_reward, bullet_part, enemy_part
+            # Return with stub safety metrics: safety=1.0, risk=0, bonuses=0
+            return total_reward, bullet_part, enemy_part, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
         
         except Exception as e:
             print(f"Reward computation failed: {e}")
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     def _compute_rewards_safety(self, mask):
         """
@@ -688,6 +720,10 @@ class BulletHellEnv(gym.Env):
         - Enhanced Enemy Danger: Enemies are 3x more dangerous than bullets (configurable).
         - Stronger Enemy Escape: 10x multiplier for fleeing enemies vs 5x for bullets.
         - Movement-Required Graze: Only award graze bonus if agent is actively evading.
+        
+        Returns:
+            tuple: (total_reward, bullet_part, enemy_part, safety_factor, total_risk, 
+                   graze_bonus, dodge_skill_bonus, bullet_escape_bonus, enemy_escape_bonus)
         """
         try:
             # Extract positions
@@ -700,9 +736,9 @@ class BulletHellEnv(gym.Env):
                 ship_pos = self.last_ship_pos
                 # If ship is lost, we assume high risk/low safety, but don't penalize heavily yet
                 # Just give 0 reward
-                return 0.0, 0.0, 0.0
+                return 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0
             else:
-                return 0.0, 0.0, 0.0
+                return 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0
             
             frame_diagonal = np.sqrt(84**2 + 84**2)
             
@@ -833,13 +869,13 @@ class BulletHellEnv(gym.Env):
             
             total_reward = conditional_alive_reward + total_escape_bonus + graze_bonus
             
-            # Return with detailed breakdown
+            # Return with detailed breakdown including safety metrics and separate escape bonuses
             # bullet_part includes dodge_skill_bonus since it's related to bullet dodging
-            return total_reward, bullet_escape_bonus + dodge_skill_bonus, enemy_escape_bonus
+            return total_reward, bullet_escape_bonus + dodge_skill_bonus, enemy_escape_bonus, safety_factor, total_risk, graze_bonus, dodge_skill_bonus, bullet_escape_bonus, enemy_escape_bonus
         
         except Exception as e:
             print(f"Safety reward computation failed: {e}")
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0
 
     def _render_frame(self, frame, info):
         display_src = frame
@@ -860,6 +896,25 @@ class BulletHellEnv(gym.Env):
         ed_status = "ON" if info['enemy_distance_enabled'] else "OFF"
         cv2.putText(display, f"BD: {bd_status} | ED: {ed_status}", (10, 230), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+        
+        # Strategy indicator
+        strategy_color = (255, 200, 100) if info['reward_strategy'] == 'safety' else (100, 200, 255)
+        cv2.putText(display, f"Strategy: {info['reward_strategy'].upper()}", (10, 270), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, strategy_color, 2)
+        
+        # Safety Factor (only for safety strategy)
+        if info['reward_strategy'] == 'safety':
+            safety = info['safety_factor']
+            # Color code: green=safe, yellow=moderate, red=dangerous
+            if safety > 0.7:
+                safety_color = (0, 255, 0)  # Green
+            elif safety > 0.4:
+                safety_color = (0, 255, 255)  # Yellow
+            else:
+                safety_color = (0, 0, 255)  # Red
+            
+            cv2.putText(display, f"Safety: {safety:.2f}", (10, 310), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, safety_color, 2)
         
         window_name = "Agent View"
         cv2.imshow(window_name, display)
@@ -937,8 +992,8 @@ class BulletHellEnv(gym.Env):
         
         # Create info panel
         info_panel = np.zeros((450, 600, 3), dtype=np.uint8)
-        y_offset = 25
-        line_height = 22
+        y_offset = 20
+        line_height = 18
         
         # Count pixels
         num_background = np.sum(mask == MASK_BACKGROUND)
@@ -947,39 +1002,84 @@ class BulletHellEnv(gym.Env):
         num_enemy = np.sum(mask == MASK_ENEMY)
         
         # Ship info
-        cv2.putText(info_panel, "=== SHIP ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.putText(info_panel, "=== SHIP ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         y_offset += line_height
-        cv2.putText(info_panel, f"Position: {ship_pos if ship_pos else 'NOT DETECTED'}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(info_panel, f"Position: {ship_pos if ship_pos else 'NOT DETECTED'}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Pixels: {num_ship}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        y_offset += line_height + 5
+        cv2.putText(info_panel, f"Pixels: {num_ship}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        y_offset += line_height + 3
         
         # Bullet info
-        cv2.putText(info_panel, "=== BULLETS ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.putText(info_panel, "=== BULLETS ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         y_offset += line_height
-        cv2.putText(info_panel, f"Count: {len(bullet_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(info_panel, f"Count: {len(bullet_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Pixels: {num_bullet}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.putText(info_panel, f"Pixels: {num_bullet}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Reward: {info['bullet_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        y_offset += line_height + 5
+        cv2.putText(info_panel, f"Reward: {info['bullet_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        y_offset += line_height + 3
         
         # Enemy info
-        cv2.putText(info_panel, "=== ENEMIES ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        cv2.putText(info_panel, "=== ENEMIES ===", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         y_offset += line_height
-        cv2.putText(info_panel, f"Count: {len(enemy_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(info_panel, f"Count: {len(enemy_positions)}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Pixels: {num_enemy}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        cv2.putText(info_panel, f"Pixels: {num_enemy}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Reward: {info['enemy_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        y_offset += line_height + 5
+        cv2.putText(info_panel, f"Reward: {info['enemy_distance_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        y_offset += line_height + 3
         
         # Total reward and metadata
-        cv2.putText(info_panel, f"TOTAL REWARD: {info['step_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        y_offset += line_height + 10
-        cv2.putText(info_panel, f"Episode Reward: {info['episode_reward']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+        cv2.putText(info_panel, f"TOTAL REWARD: {info['step_reward']:.2f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+        y_offset += line_height + 5
+        cv2.putText(info_panel, f"Episode Reward: {info['episode_reward']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
         y_offset += line_height
-        cv2.putText(info_panel, f"Luminance: {info['luminance']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+        cv2.putText(info_panel, f"Luminance: {info['luminance']:.1f}", (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+        y_offset += line_height + 5
+        
+        # Strategy indicator
+        strategy_color = (255, 200, 100) if info['reward_strategy'] == 'safety' else (100, 200, 255)
+        cv2.putText(info_panel, f"=== STRATEGY: {info['reward_strategy'].upper()} ===", (10, y_offset), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, strategy_color, 2)
+        y_offset += line_height + 3
+        
+        # Safety metrics (show for safety strategy or if interesting for baseline)
+        if info['reward_strategy'] == 'safety':
+            # Safety Factor with color coding
+            safety = info['safety_factor']
+            if safety > 0.7:
+                safety_color = (0, 255, 0)  # Green - Safe
+            elif safety > 0.4:
+                safety_color = (0, 255, 255)  # Yellow - Moderate
+            else:
+                safety_color = (0, 0, 255)  # Red - Dangerous
+            
+            cv2.putText(info_panel, f"Safety Factor: {safety:.3f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, safety_color, 2)
+            y_offset += line_height
+            
+            # Total Risk
+            cv2.putText(info_panel, f"Total Risk: {info['total_risk']:.3f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            y_offset += line_height
+            
+            # Bonuses
+            cv2.putText(info_panel, f"Graze Bonus: +{info['graze_bonus']:.2f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 255), 1)
+            y_offset += line_height
+            
+            cv2.putText(info_panel, f"Dodge Skill: +{info['dodge_skill_bonus']:.2f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 255), 1)
+            y_offset += line_height
+            
+            # Escape bonuses
+            cv2.putText(info_panel, f"Bullet Escape: +{info['bullet_escape_bonus']:.2f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 255, 150), 1)
+            y_offset += line_height
+            
+            cv2.putText(info_panel, f"Enemy Escape: +{info['enemy_escape_bonus']:.2f}", (10, y_offset), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
+            y_offset += line_height
         
         # Resize for display (scale up from 84x84)
         frame_large = cv2.resize(color_frame, (400, 400), interpolation=cv2.INTER_NEAREST)
