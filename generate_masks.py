@@ -211,7 +211,6 @@ class BulletMaskGenerator:
         # Update the cached int16 version for vectorized operations
         self._bg_colors_int16 = self.bg_colors_bgr.astype(np.int16)
         
-        print(f"[Calibration] Updated background palette with {len(unique_colors_bgr)} colors (tolerance={tolerance})")
         return len(unique_colors_bgr)
 
     def generate_mask(self, frame_bgr: np.ndarray, skip_enemy: bool = False) -> np.ndarray:

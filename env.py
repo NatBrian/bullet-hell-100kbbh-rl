@@ -28,29 +28,49 @@ class BulletHellEnv(gym.Env):
 
     def __init__(
         self,
+        # ============================================================================
+        # SHARED PARAMETERS (Used by both baseline and safety strategies)
+        # ============================================================================
         window_title="100KBBH",
         game_path=None,
         render_mode=None,
         frame_skip=1,  # Changed from 4 to 1 for faster iteration
         stack_size=4,
-        alive_thresh=150.0, # LUMINANCE THRESHOLD FOR ALIVE
-        dead_thresh=130.0, # LUMINANCE THRESHOLD FOR DEAD
+        alive_thresh=150.0,  # LUMINANCE THRESHOLD FOR ALIVE
+        dead_thresh=130.0,  # LUMINANCE THRESHOLD FOR DEAD
         dead_streak=3,
-        action_duration=0.016, # REACTION TIME AI PRESS KEY IN SECONDS (1 frame at 60 FPS)
-        save_screenshots=0, # Interval in ms to save screenshots (0 to disable)
-        reward_strategy="baseline", # 'baseline' (old) or 'safety' (new)
+        action_duration=0.016,  # REACTION TIME AI PRESS KEY IN SECONDS (1 frame at 60 FPS)
+        save_screenshots=0,  # Interval in ms to save screenshots (0 to disable)
+        force_mss=False,  # Force usage of MSS for screen capture
+        bg_threshold=2,  # Background color matching threshold
+        # Reward strategy selector
+        reward_strategy="baseline",  # 'baseline' (old) or 'safety' (new)
+        # Distance-based reward shaping (both strategies)
         use_bullet_distance_reward=False,  # Enable bullet distance reward shaping
         bullet_reward_coef=0.01,  # Coefficient for bullet distance reward
-        use_enemy_distance_reward=False, # Enable enemy distance reward shaping
-        enemy_reward_coef=0.02, # Coefficient for enemy distance reward
-        bullet_quadratic_coef=0.10, # Quadratic coefficient for bullet distance
-        bullet_density_coef=0.01, # Coefficient for cumulative bullet risk (density)
-        enemy_quadratic_coef=0.10, # Quadratic coefficient for enemy distance
+        bullet_quadratic_coef=0.10,  # Quadratic coefficient for bullet distance
+        use_enemy_distance_reward=False,  # Enable enemy distance reward shaping
+        enemy_reward_coef=0.02,  # Coefficient for enemy distance reward
+        enemy_quadratic_coef=0.10,  # Quadratic coefficient for enemy distance
+        # Basic reward values (both strategies)
         alive_reward=4.0,  # Reward per frame survived (when bright)
         death_penalty=-20.0,  # Penalty on death
         risk_clip=10.0,  # Clip for distance-based risk
-        force_mss=False, # Force usage of MSS for screen capture
-        bg_threshold=2, # Background color matching threshold
+        # ============================================================================
+        # BASELINE STRATEGY ONLY
+        # ============================================================================
+        bullet_density_coef=0.01,  # Coefficient for cumulative bullet risk (density penalty)
+        # ============================================================================
+        # SAFETY STRATEGY ONLY
+        # ============================================================================
+        # Dodging differentiation
+        dodge_skill_threshold=2.0,  # Minimum cumulative risk to trigger dodge bonus
+        dodge_skill_multiplier=0.15,  # Bonus per unit of cumulative risk when dodging
+        graze_requires_movement=True,  # Require active movement to earn graze bonus
+        graze_bonus_multiplier=0.15,  # Graze bonus as fraction of alive_reward
+        # Enemy anticipation
+        enemy_danger_multiplier=3.0,  # How much more dangerous enemies are vs bullets
+        enemy_escape_multiplier=10.0,  # Enemy escape bonus multiplier (vs 5.0 for bullets)
     ):
         super().__init__()
         self.window_title = window_title
@@ -79,6 +99,12 @@ class BulletHellEnv(gym.Env):
         self.bg_threshold = bg_threshold
         self.last_bullet_dist = None
         self.last_enemy_dist = None
+        self.dodge_skill_threshold = dodge_skill_threshold
+        self.dodge_skill_multiplier = dodge_skill_multiplier
+        self.graze_requires_movement = graze_requires_movement
+        self.graze_bonus_multiplier = graze_bonus_multiplier
+        self.enemy_danger_multiplier = enemy_danger_multiplier
+        self.enemy_escape_multiplier = enemy_escape_multiplier
         
         # Initialize bullet mask generator if needed
         if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode in ["debug", "both"]:
@@ -648,13 +674,20 @@ class BulletHellEnv(gym.Env):
 
     def _compute_rewards_safety(self, mask):
         """
-        Safety Reward Strategy (New):
+        Safety Reward Strategy (Enhanced):
         - Alive reward is NOT guaranteed. It is scaled by safety.
         - Safety Factor = 1.0 / (1.0 + Risk)
         - If Risk is high (close to bullet), Safety Factor -> 0, so Reward -> 0.
         - If Risk is low (far from bullet), Safety Factor -> 1, so Reward -> Alive Reward.
         - Explicit 'Escape Bonus' for moving away from danger.
         - NO direct subtraction penalties (prevents suicide loophole).
+        - Min Safety Floor: Ensures survival is always rewarded (distinguishes grazing from death).
+        - Enemy Scaling: Weights enemy risk relative to bullet risk using coefficients.
+        - Graze Bonus: Bonus for surviving high-risk situations (optionally requires movement).
+        - Dodge Skill Bonus: Rewards surviving in high bullet density (multiple bullets nearby).
+        - Enhanced Enemy Danger: Enemies are 3x more dangerous than bullets (configurable).
+        - Stronger Enemy Escape: 10x multiplier for fleeing enemies vs 5x for bullets.
+        - Movement-Required Graze: Only award graze bonus if agent is actively evading.
         """
         try:
             # Extract positions
@@ -673,12 +706,13 @@ class BulletHellEnv(gym.Env):
             
             frame_diagonal = np.sqrt(84**2 + 84**2)
             
-            # Initialize Risks
+            # Initialize Risks and Bonuses
             bullet_risk = 0.0
             enemy_risk = 0.0
             
             bullet_escape_bonus = 0.0
             enemy_escape_bonus = 0.0
+            dodge_skill_bonus = 0.0  # NEW: Reward for surviving high bullet density
 
             # --- 1. Bullet Risk Analysis ---
             if self.use_bullet_distance_reward:
@@ -702,6 +736,24 @@ class BulletHellEnv(gym.Env):
                             bullet_escape_bonus = min(-delta * self.risk_clip * urgency * 5.0, 1.0) 
                     
                     self.last_bullet_dist = dist
+                    
+                    # Bullet Density Awareness - Dodge Skill Bonus
+                    # Reward agent for surviving in areas with MULTIPLE bullets (skillful dodging)
+                    if len(bullet_positions) > 1:  # Only if multiple bullets present
+                        cumulative_risk = self.mask_generator.compute_cumulative_risk(
+                            ship_pos, bullet_positions, normalize_by=frame_diagonal
+                        )
+                        
+                        # If cumulative risk is high AND agent is moving, reward dodging skill
+                        if cumulative_risk > self.dodge_skill_threshold:
+                            # Only award if agent is actively evading (has escape bonus)
+                            # This prevents rewarding agent for being "stuck" in danger
+                            if bullet_escape_bonus > 0:
+                                # Bonus scales with how many bullets agent is near while dodging
+                                dodge_skill_bonus = min(
+                                    (cumulative_risk - self.dodge_skill_threshold) * self.dodge_skill_multiplier,
+                                    2.0  # Cap at +2.0 to prevent exploitation
+                                )
                 else:
                     self.last_bullet_dist = None
 
@@ -715,11 +767,17 @@ class BulletHellEnv(gym.Env):
                     raw_risk = 1.0 / (dist + 1e-6) + self.enemy_quadratic_coef / (dist**2 + 1e-6)
                     enemy_risk = min(raw_risk, self.risk_clip)
                     
+                    # Stronger enemy escape bonus
+                    # Enemies spawn immediate bullet waves, so fleeing is more critical
                     if self.last_enemy_dist is not None:
                         delta = self.last_enemy_dist - dist
                         if delta < 0: # Moving away
                             urgency = enemy_risk / self.risk_clip
-                            enemy_escape_bonus = min(-delta * self.risk_clip * urgency * 5.0, 1.0)
+                            # Use configurable enemy_escape_multiplier (default 10.0) instead of 5.0
+                            enemy_escape_bonus = min(
+                                -delta * self.risk_clip * urgency * self.enemy_escape_multiplier,
+                                2.0  # Increased cap from 1.0 to 2.0 for stronger incentive
+                            )
                             
                     self.last_enemy_dist = dist
                 else:
@@ -727,27 +785,58 @@ class BulletHellEnv(gym.Env):
 
             # --- 3. Calculate Final Reward ---
             
-            # Aggregate Risk
-            # We combine risks. If either is high, safety is low.
-            total_risk = bullet_risk + enemy_risk
+            # Aggregate Risk with Enemy Danger Multiplier
+            # Scale enemy risk relative to bullet risk using coefficients
+            # If enemy_reward_coef is 2x bullet_reward_coef, enemy is 2x more "risky" (repulsive)
+            base_coef = self.bullet_reward_coef if self.bullet_reward_coef > 0 else 0.01
+            enemy_scale = (self.enemy_reward_coef / base_coef) if self.bullet_reward_coef > 0 else 1.0
+            
+            # Apply enemy danger multiplier to make enemies MUCH more repulsive
+            # Default 3.0x means enemies contribute 3x more to total risk
+            total_risk = bullet_risk + (enemy_risk * enemy_scale * self.enemy_danger_multiplier)
             
             # Safety Factor (0.0 to 1.0)
             # If total_risk is 0, safety is 1.0
             # If total_risk is high (e.g. 10), safety is ~0.1
             safety_factor = 1.0 / (1.0 + total_risk)
             
+            # Min Safety Floor
+            # Ensure that staying alive is ALWAYS worth something, even in extreme danger.
+            # This distinguishes "Grazing/Dodging" (Alive but High Risk) from "Death" (0 Reward).
+            # Without this, High Risk ~ 0 Reward, which confuses the agent.
+            min_safety = 0.1
+            safety_factor = max(safety_factor, min_safety)
+            
             # Conditional Alive Reward
-            # You only get paid if you are safe.
             conditional_alive_reward = self.alive_reward * safety_factor
             
-            # Add Escape Bonuses (Incentive to improve safety)
-            # These are small "dopamine hits" for doing the right thing
-            total_escape_bonus = bullet_escape_bonus + enemy_escape_bonus
-            
-            total_reward = conditional_alive_reward + total_escape_bonus
-            
-            return total_reward, bullet_escape_bonus, enemy_escape_bonus
+            # Graze Bonus with Movement Requirement
+            # Reward the agent for surviving high-risk situations.
+            # This encourages the agent to be comfortable near bullets (dodging) rather than just panicking.
+            # We only give this if risk is significant (e.g. > 1.0, which implies dist < ~1.0 normalized)
+            graze_bonus = 0.0
+            if total_risk > 1.0:
+                # Bonus scales with risk, but is capped.
+                graze_factor = min(total_risk, self.risk_clip) / self.risk_clip
+                
+                if self.graze_requires_movement:
+                    # Only award if agent is actively moving (has any escape bonus)
+                    # This prevents rewarding "stuck in danger" scenarios
+                    if bullet_escape_bonus > 0 or enemy_escape_bonus > 0:
+                        graze_bonus = self.alive_reward * self.graze_bonus_multiplier * graze_factor
+                else:
+                    # Original behavior: always award regardless of movement
+                    graze_bonus = self.alive_reward * self.graze_bonus_multiplier * graze_factor
 
+            # Add All Bonuses
+            total_escape_bonus = bullet_escape_bonus + enemy_escape_bonus + dodge_skill_bonus
+            
+            total_reward = conditional_alive_reward + total_escape_bonus + graze_bonus
+            
+            # Return with detailed breakdown
+            # bullet_part includes dodge_skill_bonus since it's related to bullet dodging
+            return total_reward, bullet_escape_bonus + dodge_skill_bonus, enemy_escape_bonus
+        
         except Exception as e:
             print(f"Safety reward computation failed: {e}")
             return 0.0, 0.0, 0.0

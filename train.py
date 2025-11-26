@@ -120,7 +120,13 @@ def train(args):
         death_penalty=args.death_penalty,
         risk_clip=args.risk_clip,
         force_mss=args.force_mss,
-        bg_threshold=args.bg_threshold
+        bg_threshold=args.bg_threshold,
+        dodge_skill_threshold=args.dodge_skill_threshold,
+        dodge_skill_multiplier=args.dodge_skill_multiplier,
+        graze_requires_movement=args.graze_requires_movement,
+        graze_bonus_multiplier=args.graze_bonus_multiplier,
+        enemy_danger_multiplier=args.enemy_danger_multiplier,
+        enemy_escape_multiplier=args.enemy_escape_multiplier,
     )
 
     # Agent
@@ -286,7 +292,11 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     
-    # Env params
+    # ============================================================================
+    # SHARED PARAMETERS (Used by both baseline and safety strategies)
+    # ============================================================================
+    
+    # Environment params
     parser.add_argument("--window_title", type=str, default="100KBBH")
     parser.add_argument("--game_path", type=str, default="assets/100KBBH-1.0.3.exe", help="Path to game executable")
     parser.add_argument("--render", action="store_true", help="Show agent view")
@@ -296,6 +306,9 @@ if __name__ == "__main__":
     parser.add_argument("--alive_thresh", type=float, default=150.0)
     parser.add_argument("--dead_thresh", type=float, default=130.0)
     parser.add_argument("--dead_streak", type=int, default=3)
+    parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
+    parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
+    parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
     
     # Agent params
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -319,26 +332,39 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume")
     parser.add_argument("--full-resume", type=str, default=None, help="Path to full checkpoint (policy+optimizer+replay) to resume")
     parser.add_argument("--keep-latest-only", action="store_true", help="Only save latest.pth and latest_full.pth (saves disk space)")
-    parser.add_argument("--save-screenshots", type=int, default=0, help="Save screenshots every X ms (0 to disable)")
-    parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
-    parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
-    parser.add_argument("--risk-clip", type=float, default=10.0, help="Clip value for distance-based risk")
+    
+    # Reward strategy selector
     parser.add_argument("--reward-strategy", type=str, default="baseline", choices=["baseline", "safety"], help="Reward strategy to use")
     
-    # Bullet distance reward params (enabled by default)
+    # Distance-based reward shaping (both strategies)
     parser.add_argument("--no-bullet-distance-reward", action="store_true", help="Disable bullet distance reward shaping")
     parser.add_argument("--bullet-reward-coef", type=float, default=0.01, help="Coefficient for bullet distance reward")
     parser.add_argument("--bullet-quadratic-coef", type=float, default=0.1, help="Quadratic coefficient for bullet distance reward")
-    parser.add_argument("--bullet-density-coef", type=float, default=0.01, help="Coefficient for cumulative bullet risk (density)")
-    
-    # Enemy distance reward params (enabled by default)
     parser.add_argument("--no-enemy-distance-reward", action="store_true", help="Disable enemy distance reward shaping")
     parser.add_argument("--enemy-reward-coef", type=float, default=0.02, help="Coefficient for enemy distance reward")
     parser.add_argument("--enemy-quadratic-coef", type=float, default=0.1, help="Quadratic coefficient for enemy distance reward")
     
-    # Debugging
-    parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
-    parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
+    # Basic reward values (both strategies)
+    parser.add_argument("--alive-reward", type=float, default=4.0, help="Reward per frame survived when alive")
+    parser.add_argument("--death-penalty", type=float, default=-20.0, help="Penalty on death")
+    parser.add_argument("--risk-clip", type=float, default=10.0, help="Clip value for distance-based risk")
+    
+    # ============================================================================
+    # BASELINE STRATEGY ONLY
+    # ============================================================================
+    parser.add_argument("--bullet-density-coef", type=float, default=0.01, help="Coefficient for cumulative bullet risk density penalty (baseline only)")
+    
+    # ============================================================================
+    # SAFETY STRATEGY ONLY
+    # ============================================================================
+    # Dodging differentiation
+    parser.add_argument("--dodge-skill-threshold", type=float, default=2.0, help="Cumulative risk threshold to trigger dodge skill bonus (safety only)")
+    parser.add_argument("--dodge-skill-multiplier", type=float, default=0.15, help="Dodge skill bonus per unit of cumulative risk (safety only)")
+    parser.add_argument("--graze-requires-movement", action="store_true", default=True, help="Require active movement to earn graze bonus (safety only)")
+    parser.add_argument("--graze-bonus-multiplier", type=float, default=0.15, help="Graze bonus as fraction of alive reward (safety only)")
+    # Enemy anticipation
+    parser.add_argument("--enemy-danger-multiplier", type=float, default=3.0, help="How much more dangerous enemies are vs bullets (safety only)")
+    parser.add_argument("--enemy-escape-multiplier", type=float, default=10.0, help="Enemy escape bonus multiplier, vs 5.0 for bullets (safety only)")
 
     args = parser.parse_args()
     train(args)
