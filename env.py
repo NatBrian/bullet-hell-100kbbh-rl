@@ -106,6 +106,7 @@ class BulletHellEnv(gym.Env):
         )
 
         self.window_rect = None
+        self.hwnd = None
         self.camera = None
         self.mss_sct = None
         self.frame_stack = deque(maxlen=stack_size)
@@ -178,6 +179,7 @@ class BulletHellEnv(gym.Env):
             return hwnd
 
         hwnd = find_window_handle()
+        self.hwnd = hwnd
         
         if not hwnd and self.game_path:
             print(f"Window not found. Launching game from: {self.game_path}")
@@ -333,7 +335,8 @@ class BulletHellEnv(gym.Env):
 
         # 2. Release all keys and Press SPACE to restart
         self._release_all_keys()
-        pydirectinput.press('space')
+        if self._is_focused():
+            pydirectinput.press('space')
         
         # 3. Wait for brightness (alive)
         # We poll until mean luminance > alive_thresh
@@ -344,7 +347,8 @@ class BulletHellEnv(gym.Env):
             if lum > self.alive_thresh:
                 break
             time.sleep(0.1)
-            pydirectinput.press('space') # Keep tapping space if stuck on death screen
+            if self._is_focused():
+                pydirectinput.press('space') # Keep tapping space if stuck on death screen
 
         # 4. Calibrate mask generator (if using mask-based rewards)
         # IMPORTANT: Capture AFTER game is fully ALIVE, not during PAUSE/DEAD/END
@@ -381,6 +385,32 @@ class BulletHellEnv(gym.Env):
         
         return self._get_obs(), {}
 
+    def _is_focused(self):
+        """Checks if the game window is currently focused."""
+        try:
+            fg_hwnd = win32gui.GetForegroundWindow()
+            if not fg_hwnd:
+                return False
+                
+            # 1. Fast path: Handle matches known window
+            if hasattr(self, 'hwnd') and self.hwnd and self.hwnd == fg_hwnd:
+                return True
+            
+            # 2. Check if foreground window is actually our game (e.g. after restart)
+            # This handles stale self.hwnd
+            if self.window_title:
+                title = win32gui.GetWindowText(fg_hwnd)
+                if self.window_title in title:
+                    # It IS the game, but handle changed.
+                    # Update handle and force rect refresh to ensure we track it correctly
+                    self.hwnd = fg_hwnd
+                    self.window_rect = None 
+                    return True
+            
+            return False
+        except Exception:
+            return False
+
     def step(self, action, q_values=None):
         """Execute action with proper frame skipping.
         
@@ -401,17 +431,22 @@ class BulletHellEnv(gym.Env):
         # Execute action for frame_skip frames
         for frame_idx in range(self.frame_skip):
             # 1. Perform Action (Stateful)
-            target_keys = set(self.key_map[action])
-            if action != self.last_action:
-                # Release keys that are no longer needed
-                for k in self.pressed_keys - target_keys:
-                    pydirectinput.keyUp(k)
-                
-                # Press new keys
-                for k in target_keys - self.pressed_keys:
-                    pydirectinput.keyDown(k)
-                
-                self.pressed_keys = target_keys
+            if self._is_focused():
+                target_keys = set(self.key_map[action])
+                if action != self.last_action:
+                    # Release keys that are no longer needed
+                    for k in self.pressed_keys - target_keys:
+                        pydirectinput.keyUp(k)
+                    
+                    # Press new keys
+                    for k in target_keys - self.pressed_keys:
+                        pydirectinput.keyDown(k)
+                    
+                    self.pressed_keys = target_keys
+            else:
+                # Lost focus - release everything to be safe
+                if self.pressed_keys:
+                    self._release_all_keys()
             
             # Only sleep if we are rendering for human to see, otherwise run as fast as possible
             if self.render_mode == "human":
