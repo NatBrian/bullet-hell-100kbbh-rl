@@ -73,7 +73,7 @@ def run_batch(batches: int, episodes_per_batch: int, checkpoint_dir: Path, extra
             str(episodes_per_batch),
             "--reward-strategy",
             reward_strategy,
-            "--checkpoint-dir",
+            "--checkpoint_dir",
             str(checkpoint_dir),
         ]
         if use_double_dqn:

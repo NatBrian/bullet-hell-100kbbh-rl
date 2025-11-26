@@ -869,9 +869,12 @@ class BulletHellEnv(gym.Env):
             
             total_reward = conditional_alive_reward + total_escape_bonus + graze_bonus
             
+            bullet_part = bullet_escape_bonus + dodge_skill_bonus
+            enemy_part = enemy_escape_bonus
+            
             # Return with detailed breakdown including safety metrics and separate escape bonuses
             # bullet_part includes dodge_skill_bonus since it's related to bullet dodging
-            return total_reward, bullet_escape_bonus + dodge_skill_bonus, enemy_escape_bonus, safety_factor, total_risk, graze_bonus, dodge_skill_bonus, bullet_escape_bonus, enemy_escape_bonus
+            return total_reward, bullet_part, enemy_part, safety_factor, total_risk, graze_bonus, dodge_skill_bonus, bullet_escape_bonus, enemy_escape_bonus
         
         except Exception as e:
             print(f"Safety reward computation failed: {e}")
