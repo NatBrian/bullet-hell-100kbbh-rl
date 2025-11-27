@@ -16,6 +16,7 @@ def generate_report(log_dir, output_file="report.html"):
 def evaluate(args):
     env = BulletHellEnv(
         window_title=args.window_title,
+        game_path=args.game_path,
         render_mode="both" if (args.render and args.render_debug) else ("debug" if args.render_debug else ("human" if args.render else None)),
         frame_skip=args.frame_skip,
         stack_size=args.stack_size,
@@ -50,8 +51,35 @@ def evaluate(args):
     )
 
     if args.checkpoint:
-        agent.load(args.checkpoint)
-        print(f"Loaded checkpoint: {args.checkpoint}")
+        import torch
+        # Handle both full checkpoints and policy-only checkpoints
+        try:
+            # Try loading with weights_only=False for full checkpoints
+            try:
+                ckpt = torch.load(args.checkpoint, map_location="cuda" if args.cuda else "cpu", weights_only=False)
+            except TypeError:
+                # Older PyTorch versions don't have weights_only parameter
+                ckpt = torch.load(args.checkpoint, map_location="cuda" if args.cuda else "cpu")
+            
+            if "agent" in ckpt:
+                # Full checkpoint with training state
+                agent.load_full_state(ckpt["agent"])
+                print(f"Loaded full checkpoint: {args.checkpoint}")
+                # Optionally print checkpoint info
+                if "episode" in ckpt:
+                    print(f"  Episode: {ckpt['episode']}")
+                if "total_steps" in ckpt:
+                    print(f"  Total steps: {ckpt['total_steps']}")
+                if "args" in ckpt and "reward_strategy" in ckpt["args"]:
+                    print(f"  Reward strategy: {ckpt['args']['reward_strategy']}")
+            else:
+                # Policy-only checkpoint (state_dict)
+                agent.policy_net.load_state_dict(ckpt)
+                agent.target_net.load_state_dict(agent.policy_net.state_dict())
+                print(f"Loaded policy-only checkpoint: {args.checkpoint}")
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            raise
     
     rewards = []
     for i in range(args.episodes):
@@ -90,6 +118,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--checkpoint", type=str, required=True)
     eval_parser.add_argument("--episodes", type=int, default=5)
     eval_parser.add_argument("--window_title", type=str, default="100KBBH")
+    eval_parser.add_argument("--game_path", type=str, default="assets/100KBBH-1.0.3.exe", help="Path to game executable")
     eval_parser.add_argument("--render", action="store_true")
     eval_parser.add_argument("--render-debug", action="store_true", help="Show debug mask visualization (overrides --render)")
     eval_parser.add_argument("--frame_skip", type=int, default=1)
