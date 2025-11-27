@@ -14,6 +14,75 @@ def generate_report(log_dir, output_file="report.html"):
     generate_html_report(log_dir, output_file)
 
 def evaluate(args):
+    # Load checkpoint first to get training parameters
+    checkpoint_args = None
+    if args.checkpoint:
+        import torch
+        # Try loading checkpoint to extract training args
+        try:
+            try:
+                ckpt = torch.load(args.checkpoint, map_location="cuda" if args.cuda else "cpu", weights_only=False)
+            except TypeError:
+                ckpt = torch.load(args.checkpoint, map_location="cuda" if args.cuda else "cpu")
+            
+            if "args" in ckpt:
+                checkpoint_args = ckpt["args"]
+        except Exception as e:
+            print(f"Warning: Could not load checkpoint args: {e}")
+    
+    # Define reward-related parameters that should match training
+    reward_params = [
+        'reward_strategy', 'no_bullet_distance_reward', 'bullet_reward_coef', 
+        'bullet_quadratic_coef', 'no_enemy_distance_reward', 'enemy_reward_coef',
+        'enemy_quadratic_coef', 'alive_reward', 'death_penalty', 'risk_clip',
+        'bullet_density_coef', 'dodge_skill_threshold', 'dodge_skill_multiplier',
+        'graze_requires_movement', 'graze_bonus_multiplier', 'enemy_danger_multiplier',
+        'enemy_escape_multiplier'
+    ]
+    
+    # Check for parameter mismatches and apply checkpoint defaults
+    if checkpoint_args:
+        import sys
+        # Check if user explicitly provided CLI arguments (not just defaults)
+        cli_args = sys.argv[1:]
+        mismatches = []
+        params_loaded = 0
+        
+        for param in reward_params:
+            # Only process if parameter exists in checkpoint (for backward compatibility)
+            if param in checkpoint_args:
+                checkpoint_value = checkpoint_args[param]
+                current_value = getattr(args, param, None)
+                
+                # Skip if current args doesn't have this param (shouldn't happen, but defensive)
+                if current_value is None:
+                    continue
+                
+                # Check if this parameter was explicitly set via CLI
+                param_flag = f"--{param.replace('_', '-')}"
+                explicitly_set = param_flag in cli_args
+                
+                # If not explicitly set, use checkpoint value
+                if not explicitly_set:
+                    setattr(args, param, checkpoint_value)
+                    params_loaded += 1
+                elif checkpoint_value != current_value:
+                    # User override detected
+                    mismatches.append(f"  {param}: training={checkpoint_value}, eval={current_value}")
+        
+        if params_loaded > 0:
+            print(f"Loaded {params_loaded} reward parameters from checkpoint")
+        
+        if mismatches:
+            print("\n" + "="*70)
+            print("WARNING: Evaluation parameters differ from training parameters!")
+            print("="*70)
+            for mismatch in mismatches:
+                print(mismatch)
+            print("\nThis may produce misleading evaluation metrics.")
+            print("The agent's behavior was optimized for the training parameters.")
+            print("="*70 + "\n")
+    
     env = BulletHellEnv(
         window_title=args.window_title,
         game_path=args.game_path,
@@ -52,7 +121,7 @@ def evaluate(args):
 
     if args.checkpoint:
         import torch
-        # Handle both full checkpoints and policy-only checkpoints
+        # Load checkpoint into agent
         try:
             # Try loading with weights_only=False for full checkpoints
             try:
