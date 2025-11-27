@@ -50,7 +50,7 @@ This project implements a production-ready Deep Q-Network (DQN) agent to play th
 
 ## Installation
 
-1.  **Prerequisites**: Windows 10/11, Python 3.8+.
+1.  **Prerequisites**: Windows 10/11, Python 3.11+.
 2.  **Install Dependencies**:
     ```powershell
     pip install -r requirements.txt
