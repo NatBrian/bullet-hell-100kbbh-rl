@@ -315,7 +315,7 @@ if __name__ == "__main__":
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--buffer_size", type=int, default=50000)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--double_dqn", action="store_true")
+    parser.add_argument("--double_dqn", action=argparse.BooleanOptionalAction, default=True, help="Use Double DQN (default: True). Use --no-double_dqn to disable.")
     
     # Training params
     parser.add_argument("--total_episodes", type=int, default=1000)

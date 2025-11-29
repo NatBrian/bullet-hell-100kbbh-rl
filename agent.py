@@ -122,7 +122,7 @@ class DQNAgent:
         buffer_size=10000,
         batch_size=32,
         device="cuda" if torch.cuda.is_available() else "cpu",
-        double_dqn=False
+        double_dqn=True
     ):
         self.num_actions = num_actions
         self.batch_size = batch_size

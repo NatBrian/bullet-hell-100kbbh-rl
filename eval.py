@@ -37,7 +37,7 @@ def evaluate(args):
         'enemy_quadratic_coef', 'alive_reward', 'death_penalty', 'risk_clip',
         'bullet_density_coef', 'dodge_skill_threshold', 'dodge_skill_multiplier',
         'graze_requires_movement', 'graze_bonus_multiplier', 'enemy_danger_multiplier',
-        'enemy_escape_multiplier'
+        'enemy_escape_multiplier', 'double_dqn'
     ]
     
     # Check for parameter mismatches and apply checkpoint defaults
@@ -116,7 +116,8 @@ def evaluate(args):
     agent = DQNAgent(
         input_shape=(args.stack_size, 84, 84),
         num_actions=env.action_space.n,
-        device="cuda" if args.cuda else "cpu"
+        device="cuda" if args.cuda else "cpu",
+        double_dqn=args.double_dqn
     )
 
     if args.checkpoint:
@@ -198,6 +199,7 @@ if __name__ == "__main__":
     eval_parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
     eval_parser.add_argument("--cuda", action="store_true")
     eval_parser.add_argument("--bg-threshold", type=int, default=2, help="Background color matching threshold (default: 2)")
+    eval_parser.add_argument("--double_dqn", action=argparse.BooleanOptionalAction, default=True, help="Use Double DQN (default: True). Use --no-double_dqn to disable.")
     
     # Reward strategy selector
     eval_parser.add_argument("--reward-strategy", type=str, default="baseline", choices=["baseline", "safety"], help="Reward strategy to use")

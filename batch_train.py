@@ -118,7 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("--batches", type=int, default=100, help="Number of batches to run")
     parser.add_argument("--episodes-per-batch", type=int, default=100, help="Episodes per batch")
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints"), help="Checkpoint directory")
-    parser.add_argument("--double-dqn", action="store_true", help="Enable Double DQN")
+    parser.add_argument("--double-dqn", action=argparse.BooleanOptionalAction, default=True, help="Use Double DQN (default: True). Use --no-double-dqn to disable.")
     parser.add_argument("--render", action="store_true", help="Render agent view")
     parser.add_argument("--keep-latest-only", action=argparse.BooleanOptionalAction, default=True, help="Only save latest checkpoints to save disk space (default: True). Use --no-keep-latest-only to disable.")
     parser.add_argument("--force-mss", action="store_true", help="Force usage of MSS for screen capture (bypass DXCAM)")
