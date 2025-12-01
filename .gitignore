@@ -184,6 +184,8 @@ cython_debug/
 checkpoints/
 checkpoints_safety/
 checkpoints_baseline/
+checkpoints_ppo_safety/
+checkpoints_ppo_baseline/
 logs/
 .conda/
 game_screenshots/
@@ -191,3 +193,5 @@ game_screenshots_mask/
 backup_checkpoints/
 logs_baseline/
 logs_safety/
+logs_ppo_safety/
+logs_ppo_baseline/

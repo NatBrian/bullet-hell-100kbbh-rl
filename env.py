@@ -71,6 +71,7 @@ class BulletHellEnv(gym.Env):
         # Enemy anticipation
         enemy_danger_multiplier=3.0,  # How much more dangerous enemies are vs bullets
         enemy_escape_multiplier=10.0,  # Enemy escape bonus multiplier (vs 5.0 for bullets)
+        use_mask_obs=True,  # Use segmentation mask as observation instead of grayscale
     ):
         super().__init__()
         self.window_title = window_title
@@ -106,9 +107,21 @@ class BulletHellEnv(gym.Env):
         self.graze_bonus_multiplier = graze_bonus_multiplier
         self.enemy_danger_multiplier = enemy_danger_multiplier
         self.enemy_escape_multiplier = enemy_escape_multiplier
+        self.use_mask_obs = use_mask_obs
         
         # Initialize bullet mask generator if needed
-        if self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode in ["debug", "both"]:
+        # We need it if:
+        # 1. We are using distance-based rewards (baseline or safety)
+        # 2. We are using mask as observation
+        # 3. We are rendering debug info
+        self.use_mask = (
+            self.use_bullet_distance_reward or 
+            self.use_enemy_distance_reward or 
+            self.use_mask_obs or 
+            self.render_mode in ["debug", "both"]
+        )
+        
+        if self.use_mask:
             self.mask_generator = BulletMaskGenerator(bg_threshold=self.bg_threshold)
         
         if self.save_screenshots > 0:
@@ -383,8 +396,7 @@ class BulletHellEnv(gym.Env):
         # 4. Calibrate mask generator (if using mask-based rewards)
         # IMPORTANT: Capture AFTER game is fully ALIVE, not during PAUSE/DEAD/END
         # Wait a small amount to ensure transition is complete and game is stable
-        use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward
-        if use_mask and hasattr(self, 'mask_generator'):
+        if self.use_mask and hasattr(self, 'mask_generator'):
             # Small delay to ensure game has fully transitioned to ALIVE state
             # and any fade-in animations are complete
             time.sleep(0.2)
@@ -402,10 +414,16 @@ class BulletHellEnv(gym.Env):
                 print(f"[Warning] Skipped calibration: luminance {lum_check:.1f} < {self.alive_thresh}")
         
         # 5. Fill stack
-        if use_mask:
+        if self.use_mask:
             frame_gray, frame_color = self._capture_frame(return_color=True)
             mask = self.mask_generator.generate_mask(frame_color)
-            obs_frame = mask
+            
+            if self.use_mask_obs:
+                # Scale mask to full 0-255 range for better CNN visibility
+                # 0->0 (BG), 1->85 (Bullet), 2->170 (Ship), 3->255 (Enemy)
+                obs_frame = mask * 85
+            else:
+                obs_frame = frame_gray
         else:
             frame_gray = self._capture_frame()
             obs_frame = frame_gray
@@ -489,11 +507,15 @@ class BulletHellEnv(gym.Env):
                 time.sleep(self.action_duration)  # Idle
 
             # 2. Capture & Process
-            use_mask = self.use_bullet_distance_reward or self.use_enemy_distance_reward or self.render_mode in ["debug", "both"]
-            if use_mask:
+            if self.use_mask:
                 gray_frame, color_frame = self._capture_frame(return_color=True)
                 mask = self.mask_generator.generate_mask(color_frame)
-                obs_frame = mask if (self.use_bullet_distance_reward or self.use_enemy_distance_reward) else gray_frame
+                
+                if self.use_mask_obs:
+                    # Scale mask to full 0-255 range
+                    obs_frame = mask * 85
+                else:
+                    obs_frame = gray_frame
             else:
                 gray_frame = self._capture_frame()
                 mask = None
@@ -526,7 +548,7 @@ class BulletHellEnv(gym.Env):
                         # --- BASELINE STRATEGY (Old) ---
                         # Fixed alive reward + penalties for danger
                         frame_reward = self.alive_reward
-                        if use_mask and mask is not None:
+                        if self.use_mask and mask is not None:
                             dist_reward, b_rew, e_rew, s_factor, t_risk, g_bonus, d_bonus, b_escape, e_escape = self._compute_rewards_baseline(mask)
                             frame_reward += dist_reward
                             step_bullet_reward += b_rew
@@ -542,7 +564,7 @@ class BulletHellEnv(gym.Env):
                         # --- SAFETY STRATEGY (New) ---
                         # Alive reward is conditional on safety (scaled by risk)
                         # No direct penalties, only safety scaling + escape bonus
-                        if use_mask and mask is not None:
+                        if self.use_mask and mask is not None:
                             frame_reward, b_rew, e_rew, s_factor, t_risk, g_bonus, d_bonus, b_escape, e_escape = self._compute_rewards_safety(mask)
                             step_bullet_reward += b_rew
                             step_enemy_reward += e_rew
